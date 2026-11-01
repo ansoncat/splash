@@ -12,10 +12,10 @@ namespace splash::model {
 
 namespace {
 
-// A layer's weights; its MoE experts read their slots from `slots`, every
-// expert resident in its own.
+// A layer's weights; a MoE layer's routed experts are block `block` of
+// `experts` (openMoeExperts).
 NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout, uint32_t index,
-                                const metal::MetalBuffer &slots) {
+                                const MoeExperts &experts, uint32_t block) {
   const auto f32 = [&](uint32_t width, std::string_view label) { return readNorm(file, width, true, label).buffer; };
   NemotronHLayerWeights layer;
   layer.norm = readNorm(file, layout.hiddenSize, true, "block-norm");
@@ -52,32 +52,30 @@ NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout,
   }
   case NemotronBlock::Moe: {
     NemotronMoeWeights m;
-    const uint32_t experts = NemotronHLayout::layerExperts(index), width = NemotronHLayout::layerExpertWidth(index);
+    const uint32_t count = NemotronHLayout::layerExperts(index);
     m.experts.router = readQuantizedSegment(file, "router");
-    m.experts.selectionBias = f32(experts, "exp-probs-bias");
+    m.experts.selectionBias = f32(count, "exp-probs-bias");
     m.latentDown = readBlockProjection(file, layout.moeLatentSize, layout.hiddenSize, "latent-down");
-    m.experts.up.routed = readQuantizedSegment(file, "experts-up");
-    m.experts.down.routed = readQuantizedSegment(file, "experts-down");
+    if (!experts.store) {
+      m.experts.up.routed = readQuantizedSegment(file, "experts-up");
+      m.experts.down.routed = readQuantizedSegment(file, "experts-down");
+      m.experts.slotTable = experts.resident;
+      m.experts.slots = count;
+      m.experts.chunks = ops::residentExpertChunks(m.experts);
+    }
     m.latentUp = readBlockProjection(file, layout.hiddenSize, layout.moeLatentSize, "latent-up");
     m.sharedUp = readBlockProjection(file, layout.sharedIntermediateSize, layout.hiddenSize, "shared-up");
     m.sharedDown = readBlockProjection(file, layout.hiddenSize, layout.sharedIntermediateSize, "shared-down");
-    m.experts.slotTable = slots;
-    m.experts.slots = experts;
-    m.experts.chunks = ops::residentExpertChunks(m.experts);
+    // The store keeps the block's router and selection bias, which predict
+    // its routes.
+    if (experts.store) experts.store->bind(block, m.experts);
     const ops::QuantizedSegment &up = m.experts.up.routed, &down = m.experts.down.routed;
-    m.shape = {.hiddenSize = layout.moeLatentSize,
-               .experts = experts,
-               .expertsPerToken = layout.expertsPerToken,
-               .expertIntermediateSize = width,
-               .expertFormat = up.formatId,
-               .registerFormats = quant_register_tensor(up.formatId, up.inputSize) &&
-                                  quant_register_tensor(down.formatId, down.inputSize),
-               .router = ops::MoeRouter::SigmoidBiased,
-               .sharedSlices = 0,
-               .sharedGate = false,
-               .activation = ops::MoeActivation::ReluSquared,
-               .routerInputSize = layout.hiddenSize,
-               .routedScale = layout.routedScale};
+    m.shape = layout.moeBlockShape();
+    m.shape.experts = count;
+    m.shape.expertIntermediateSize = NemotronHLayout::layerExpertWidth(index);
+    m.shape.expertFormat = up.formatId;
+    m.shape.registerFormats =
+        quant_register_tensor(up.formatId, up.inputSize) && quant_register_tensor(down.formatId, down.inputSize);
     if (!m.shape.valid()) throw WeightStoreError("Nemotron-H MoE block has no compiled shape");
     layer.block = std::move(m);
     break;
@@ -97,10 +95,19 @@ NemotronHWeights loadNemotronHWeights(metal::MetalBackend &backend, const Nemotr
   NemotronHWeights result;
   result.layout = layout;
   result.layers.reserve(layout.layers);
-  const metal::MetalBuffer slots = residentExpertSlots(backend, layout.experts);
-  for (uint32_t index = 0; index < layout.layers; ++index) {
+  // Its MoE layers' experts, in a store when they stream: its blocks those
+  // layers, in order (gguf::streamedExperts).
+  MoeExperts experts{.experts = layout.experts};
+  if (gguf.streamsExperts())
+    experts.store = std::make_shared<ExpertStore>(backend, gguf.streamedExperts(), layout.moeBlockShape(),
+                                                  gguf.expertStoreOptions());
+  else
+    experts.resident = residentExpertSlots(backend, layout.experts);
+  result.experts = experts.store;
+  for (uint32_t index = 0, block = 0; index < layout.layers; ++index) {
     WeightFile file = gguf.layer(index);
-    result.layers.push_back(readLayer(file, layout, index, slots));
+    result.layers.push_back(readLayer(file, layout, index, experts, block));
+    block += NemotronHLayout::block(index) == NemotronBlock::Moe;
     file.finish();
     result.files.push_back(file.record());
   }

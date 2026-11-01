@@ -139,6 +139,7 @@ public:
     image_.repack(std::move(repack));
   }
 
+  void ungatedExperts() noexcept { image_.ungatedExperts(); }
   // One routed experts' tensor [experts * N, K] (routedExperts).
   void expertTensor(const std::string &name, uint64_t rows, uint64_t columns) {
     const GgufTensor *tensor = find(name, quantizedType);
@@ -677,6 +678,7 @@ struct NemotronHGguf final {
       b.floatTensor(p + "ffn_gate_inp.weight", experts, hidden);
       b.floatNorm(p + "exp_probs_b.bias", experts);
       b.quantized(p + "ffn_latent_down.weight", latent, hidden);
+      b.ungatedExperts();
       b.expertTensor(p + "ffn_up_exps.weight", experts * width, latent);
       b.expertTensor(p + "ffn_down_exps.weight", experts * latent, width);
       b.quantized(p + "ffn_latent_up.weight", hidden, latent);
@@ -823,10 +825,9 @@ void requireRotation(const GgufFile &file, const QwenTargetDimensions &g, const 
 
 std::vector<StreamedExperts> streamedExperts(std::span<const Image> layers) {
   std::vector<StreamedExperts> result;
-  for (const Image &layer : layers) {
-    if (!layer.experts) throw GgufError("a target layer's experts do not stream");
-    result.push_back(*layer.experts);
-  }
+  for (const Image &layer : layers)
+    if (layer.experts) result.push_back(*layer.experts);
+  if (result.empty()) throw GgufError("no target layer's experts stream");
   return result;
 }
 

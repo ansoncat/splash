@@ -189,7 +189,8 @@ struct PlanOptions {
 };
 
 // The routed experts each layer's image streams (Image::experts), in layer
-// order; throws unless every layer's do.
+// order, past the layers of no routed experts (Nemotron-H's Mamba-2 and
+// attention layers); throws unless one does.
 [[nodiscard]] std::vector<StreamedExperts> streamedExperts(std::span<const Image> layers);
 // The bytes of the table rows an image streams (Image::streamedRows), 0 for
 // none.
@@ -231,6 +232,9 @@ public:
   // expertRepack() keeps in Image::experts.
   [[nodiscard]] Repack expertPlanes(uint32_t format, uint64_t rows, uint64_t columns, const std::string &name);
   void expertRepack(Repack repack);
+  // The layer's routed experts are ungated (ops::MoeActivation::
+  // ReluSquared): its up and down alone follow, and its gate has no rows.
+  void ungatedExperts() noexcept { expertProjections_ = 1; }
   [[nodiscard]] Image finish();
 
 private:

@@ -125,6 +125,21 @@ struct NemotronHLayout final : QwenHybridLayout {
                          "Nemotron-3.5-Bolt"} {}
   bool operator==(const NemotronHLayout &) const = default;
 
+  // Its MoE blocks' shape, of the most experts and the widest of any layer:
+  // its expert store's, which each layer's narrows to its own (this hides
+  // QwenHybridLayout's, of the Qwen families' MoE).
+  [[nodiscard]] constexpr ops::MoeShape moeBlockShape() const noexcept {
+    return {.hiddenSize = moeLatentSize,
+            .experts = experts,
+            .expertsPerToken = expertsPerToken,
+            .expertIntermediateSize = expertIntermediateSize,
+            .router = ops::MoeRouter::SigmoidBiased,
+            .sharedSlices = 0,
+            .sharedGate = false,
+            .activation = ops::MoeActivation::ReluSquared,
+            .routerInputSize = hiddenSize,
+            .routedScale = routedScale};
+  }
   [[nodiscard]] static constexpr NemotronBlock block(uint32_t layer) noexcept { return boltBlock(layer); }
   [[nodiscard]] static constexpr uint32_t layerExperts(uint32_t layer) noexcept { return kBoltExperts[layer]; }
   [[nodiscard]] static constexpr uint32_t layerExpertWidth(uint32_t layer) noexcept {

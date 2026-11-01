@@ -235,6 +235,7 @@ bool slotsHoldTheirExperts(const Model &m, const BlockMoeWeights &streamed, cons
     const auto [chunk, local] = chunkOf(streamed.chunks, table[expert]);
     for (size_t p = 0; p < 3; ++p) {
       const QuantizedSegment &experts = resident[p]->routed;
+      if (!experts.outputSize) continue; // an ungated expert's gate
       const uint64_t rows = experts.outputSize / m.shape.experts;
       const splash::model::GgufPlaneBytes planes =
           splash::model::ggufPlaneBytes(kQuantFormats[experts.formatId], rows, experts.inputSize);
@@ -341,6 +342,90 @@ int streamedExperts(MetalBackend &backend, const MoeShape &shape, const std::fil
   if (!decodePrefetched) {
     printf("  streamed decode steps never copied a predicted expert read ahead FAIL\n");
     ++failures;
+  }
+  return failures;
+}
+
+// Nemotron-H's latent MoE, whose blocks differ in their experts and width
+// (the store's shape their most and widest): blocks of 240 and 160 experts 512
+// wide, then of 240 and 200 640 wide, two streamed sizes, of ungated ReLU^2
+// experts behind a biased sigmoid router of rows of 512. Each block's
+// streamed experts run bitwise as its resident ones, its decode loads
+// predicting the next block's routes by that block's router, bias and
+// experts.
+int streamedLatentBlocks(MetalBackend &backend, const std::filesystem::path &directory) {
+  const MoeShape shape{.hiddenSize = 256,
+                       .experts = 240,
+                       .expertsPerToken = 9,
+                       .expertIntermediateSize = 640,
+                       .router = splash::ops::MoeRouter::SigmoidBiased,
+                       .sharedSlices = 0,
+                       .sharedGate = false,
+                       .activation = splash::ops::MoeActivation::ReluSquared,
+                       .routerInputSize = 512,
+                       .routedScale = 5.0f};
+  constexpr std::array<std::pair<uint32_t, uint32_t>, 4> kBlocks{{{240, 512}, {160, 512}, {240, 640}, {200, 640}}};
+  int failures = 0;
+  for (const Fmt f : {Q4K, IQ4NL, Q80}) {
+    std::vector<Model> models;
+    std::vector<std::unique_ptr<ExpertFile>> files;
+    StreamedBlocks blocks;
+    for (uint32_t block = 0; block < kBlocks.size(); ++block) {
+      MoeShape own = shape;
+      own.experts = kBlocks[block].first;
+      own.expertIntermediateSize = kBlocks[block].second;
+      models.push_back(makeModel(backend, own, f, true));
+      files.push_back(
+          std::make_unique<ExpertFile>(models.back(), directory / ("latent-" + std::to_string(block) + ".bin")));
+      blocks.blocks.push_back(files.back()->blocks.blocks[0]);
+      blocks.checks.push_back(files.back()->blocks.checks[0]);
+    }
+    // The files outlive the store.
+    blocks.sources = files.front()->source;
+    const std::string formats = formatNames(models[0]) + " " + formatNames(models[2]);
+    // About three quarters of each size's slots: 300 of 400 and 330 of 440.
+    ExpertStore store(backend, blocks, shape,
+                      storeOptions(arenaBytes(models[0], 300) + arenaBytes(models[2], 330) + kSpareBytes, blocks,
+                                   shape));
+    std::vector<BlockMoeWeights> streamed;
+    streamed.reserve(kBlocks.size());
+    for (uint32_t block = 0; block < kBlocks.size(); ++block) {
+      streamed.push_back(models[block].weights);
+      store.bind(block, streamed.back());
+    }
+    Buffers b;
+    const int before = failures;
+    // Decode steps (lanes) and prefill chunks (rows) of fresh rows, the four
+    // blocks in turn, a decode step's blocks on the same rows.
+    for (const auto &[lanes, rows] : {std::pair{1u, 0u}, std::pair{4u, 0u}, std::pair{0u, 27u},
+                                      std::pair{0u, kMaximumRows}, std::pair{3u, 0u}, std::pair{0u, 9u}})
+      for (uint32_t block = 0; block < kBlocks.size(); ++block) {
+        const MoeShape &own = models[block].shape;
+        const MoePlan plan = lanes ? MoE::decodePlan(own, lanes, MoeConfig{}) : prefillPlan(own, rows);
+        if (block == 0 || !lanes) {
+          freshRows(backend, b, shape);
+          b.routerInput = activations(uint64_t{kMaximumRows} * shape.routerInput());
+          b.moe.routerInput = bfloatBuffer(backend, b.routerInput, "moe-router-input");
+        }
+        const std::vector<uint16_t> want = runWeights(backend, models[block].weights, b, plan);
+        const std::vector<uint16_t> got = runWeights(backend, streamed[block], b, plan);
+        if (got != want || !slotsHoldTheirExperts(models[block], streamed[block], b, plan)) {
+          printf("  %s %s rows=%u block %u: streamed experts differ from the resident experts FAIL\n",
+                 formats.c_str(), lanes ? "decode" : "prefill", plan.rows(), block);
+          ++failures;
+        }
+      }
+    const ExpertStoreStats stats = store.stats();
+    if (stats.slots >= 840 || !stats.uses[0].loads || !stats.uses[1].loads || !stats.failure.empty()) {
+      printf("  %s: %llu slots, %llu prefill and %llu decode loads%s%s FAIL\n", formats.c_str(),
+             (unsigned long long)stats.slots, (unsigned long long)stats.uses[0].loads,
+             (unsigned long long)stats.uses[1].loads, stats.failure.empty() ? "" : ", failed: ",
+             stats.failure.c_str());
+      ++failures;
+    }
+    printf("%-41s latent blocks of 240/160 experts 512 wide and 240/200 640 wide streamed in %llu slots, "
+           "decode B1/3/4 and prefill 9/27/263: bitwise the resident experts' %s\n",
+           formats.c_str(), (unsigned long long)stats.slots, failures > before ? "FAIL" : "ok");
   }
   return failures;
 }
@@ -1572,6 +1657,7 @@ int main(int argc, const char *argv[]) {
                     streamedChunkLimit(backend, shape, directory.path()) +
                     streamedSourceChanges(argv[1], shape, directory.path());
       }
+      failures += streamedLatentBlocks(backend, directory.path());
       if (failures) {
         std::cerr << "expert_store_test: " << failures << " failures\n";
         return 1;

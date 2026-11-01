@@ -160,10 +160,16 @@ void addExperts(metal::CommandGraph &graph, const MoeScratch &scratch, const Blo
     std::vector<metal::MetalBuffer> bindings{passInput};
     if (table16) bindings.push_back(scratch.groupedSums);
     const QuantizedSegment &shared = sharedSlots(projection, shape);
+    // Without shared slices the pass reads none of those slots, which take a
+    // buffer each: the routed segment's planes, or the first chunk's of the
+    // projection where the experts stream (their segment has none).
+    const std::vector<metal::MetalBuffer> &chunkPlanes = *weights.chunks.planes();
+    const bool streamed = !shape.sharedSlices && !shared.plane0;
     bindings.insert(bindings.end(),
-                    {scratch.tileDescriptors, scratch.tileCount, shared.plane0,
-                     shared.plane1Slot(), shared.meta, output,
-                     scratch.expertOutput, weights.slotTable});
+                    {scratch.tileDescriptors, scratch.tileCount, streamed ? chunkPlanes[z * 3] : shared.plane0,
+                     streamed ? chunkPlanes[z * 3 + 1] : shared.plane1Slot(),
+                     streamed ? chunkPlanes[z * 3 + 2] : shared.meta, output, scratch.expertOutput,
+                     weights.slotTable});
     graph.add(kernel + (up ? "_g" : "_a") + slices, std::move(bindings), params(projection, z, n, k),
               {columns, tiles, 1}, grid, {threads, 1, 1});
     graph.addresses(weights.chunks.planes());
