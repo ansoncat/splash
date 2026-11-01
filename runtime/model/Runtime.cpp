@@ -3542,8 +3542,9 @@ WarmupStepResult Runtime::warmupCompositeStateRestore() {
 
 ModelMemoryActual Runtime::actualRuntimeMemory() const {
   const QwenTargetScratchBytes target = impl_->targetModel->allocatedScratchBytes();
+  const uint64_t lilicorr = impl_->draftModel ? impl_->draftModel->allocatedLiLiCorrBytes() : 0;
   return {impl_->states.actualAllocatedBytes(), impl_->prefillArena->bytes() + target.prefill,
-          impl_->decodeArena->bytes() + target.decode, impl_->states.stagingBytes()};
+          impl_->decodeArena->bytes() + target.decode + lilicorr, impl_->states.stagingBytes()};
 }
 
 ModelTelemetry Runtime::telemetry() const noexcept {
@@ -3589,7 +3590,7 @@ ModelMemoryPlan plannedRuntimeMemory(const LoadedModel &model,
   const RuntimeGeometry geometry = RuntimeGeometry::from(model, kvFormat, stateFormat, parts);
   return {model.stateLayout(stateFormat).laneBytes(),
           plannedPrefillBytes(geometry, operators),
-          plannedDecodeBytes(geometry, operators)};
+          plannedDecodeBytes(geometry, operators) + DFlashDraft::liLiCorrBytes(model.draft, operators)};
 }
 
 bool budgetsVerifyRows(const LoadedModel &model, VerifyRows rows) noexcept {

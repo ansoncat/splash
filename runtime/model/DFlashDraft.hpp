@@ -297,6 +297,12 @@ public:
                     const ops::EmbeddingWeights *tokenEmbedding = nullptr,
                     std::span<const metal::MetalBuffer> anchorRows = {}) const;
   [[nodiscard]] bool lilicorr() const noexcept { return weights_.lilicorr.has_value(); }
+  // The bytes of a LiLiCorr selector's scratch (allocateLiLiCorr) for
+  // `weights`, each buffer's in whole host pages; zero without one. The
+  // memory plan charges them to shared decode.
+  [[nodiscard]] static uint64_t liLiCorrBytes(const DFlashDraftWeights &weights, const ops::ExecutionPlans &operators);
+  // What allocateLiLiCorr allocated.
+  [[nodiscard]] uint64_t allocatedLiLiCorrBytes() const noexcept;
   // Sets each of `lanes` lanes' mask rows of the draft input `rows` (all but
   // its anchor's, row 0 of its draftQueryRows) to the mask embedding the
   // checkpoint ships; without one they keep the target table's row.

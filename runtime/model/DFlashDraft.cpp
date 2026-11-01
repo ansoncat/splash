@@ -420,14 +420,47 @@ void DFlashDraft::addContextCommit(
   }
 }
 
+namespace {
+
+// The linear scratch a LiLiCorr selector's projections share.
+ops::LinearScratchSize liLiCorrLinear(const ops::LiLiCorrWeights &weights, const ops::ExecutionPlans &operators) {
+  ops::LinearScratchSize size;
+  for (const ops::Projection *p : weights.projections())
+    size.include(operators.linear().prefillScratchSize(p->shape()));
+  return size;
+}
+
+} // namespace
+
+uint64_t DFlashDraft::liLiCorrBytes(const DFlashDraftWeights &weights, const ops::ExecutionPlans &operators) {
+  if (!weights.lilicorr) return 0;
+  uint64_t bytes = 0;
+  for (uint64_t size : ops::LiLiCorr::scratchBytes(weights.layout.hiddenSize)) bytes += alignUp(size);
+  const ops::LinearScratchSize linear = liLiCorrLinear(*weights.lilicorr, operators);
+  for (uint64_t size : {linear.input, linear.sums, linear.partials, linear.counters, linear.rotated})
+    bytes += alignUp(size);
+  return bytes;
+}
+
+uint64_t DFlashDraft::allocatedLiLiCorrBytes() const noexcept {
+  if (!lilicorr_) return 0;
+  const ops::LiLiCorrScratch &s = *lilicorr_;
+  uint64_t bytes = 0;
+  for (const metal::MetalBuffer *buffer :
+       {&s.lse, &s.ids, &s.features, &s.featureDown, &s.embedded, &s.token, &s.pass, &s.x, &s.normalized, &s.wide,
+        &s.attention, &s.projected, &s.mlp, &s.anchorInput, &s.anchorProjected, &s.anchorState, &s.anchorRows,
+        &s.anchorOut, &s.outHead, &s.inHead, &s.linear.input, &s.linear.sums, &s.linear.partials,
+        &s.linear.counters, &s.linear.rotated})
+    bytes += buffer->sizeBytes();
+  return bytes;
+}
+
 void DFlashDraft::allocateLiLiCorr() {
   const std::vector<uint64_t> bytes = ops::LiLiCorr::scratchBytes(weights_.layout.hiddenSize);
   std::vector<metal::MetalBuffer> views;
   for (uint64_t size : bytes)
     views.push_back(backend_.allocateBuffer(size, metal::BufferStorage::Shared, "lilicorr-scratch"));
-  ops::LinearScratchSize size;
-  for (const ops::Projection *p : weights_.lilicorr->projections())
-    size.include(operators_.linear().prefillScratchSize(p->shape()));
+  const ops::LinearScratchSize size = liLiCorrLinear(*weights_.lilicorr, operators_);
   const auto optional = [&](uint64_t bytes) {
     return bytes ? backend_.allocateBuffer(bytes, metal::BufferStorage::Shared, "lilicorr-linear")
                  : metal::MetalBuffer{};
