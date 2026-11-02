@@ -137,6 +137,10 @@ public:
     [[nodiscard]] NativeRuntime &nativeLoop() noexcept {
         return *nativeLoop_;
     }
+    // What startup warmed and audited, as the Ready announcement saw it.
+    [[nodiscard]] const RuntimeBootstrapReport &report() const noexcept {
+        return report_;
+    }
 
     // The control pass the transport runs at a command-free point: it
     // samples the thermal state, keeps the disk tier within what its volume
