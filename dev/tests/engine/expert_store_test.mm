@@ -364,7 +364,10 @@ int streamedLatentBlocks(MetalBackend &backend, const std::filesystem::path &dir
                        .activation = splash::ops::MoeActivation::ReluSquared,
                        .routerInputSize = 512,
                        .routedScale = 5.0f};
-  constexpr std::array<std::pair<uint32_t, uint32_t>, 4> kBlocks{{{240, 512}, {160, 512}, {240, 640}, {200, 640}}};
+  // Two sizes of two blocks each, which stream, and a size of one block
+  // (120 experts 384 wide), which holds all of its experts.
+  constexpr std::array<std::pair<uint32_t, uint32_t>, 5> kBlocks{
+      {{240, 512}, {160, 512}, {120, 384}, {240, 640}, {200, 640}}};
   int failures = 0;
   for (const Fmt f : {Q4K, IQ4NL, Q80}) {
     std::vector<Model> models;
@@ -382,11 +385,15 @@ int streamedLatentBlocks(MetalBackend &backend, const std::filesystem::path &dir
     }
     // The files outlive the store.
     blocks.sources = files.front()->source;
-    const std::string formats = formatNames(models[0]) + " " + formatNames(models[2]);
-    // About three quarters of each size's slots: 300 of 400 and 330 of 440.
-    ExpertStore store(backend, blocks, shape,
-                      storeOptions(arenaBytes(models[0], 300) + arenaBytes(models[2], 330) + kSpareBytes, blocks,
-                                   shape));
+    const std::string formats = formatNames(models[0]) + " " + formatNames(models[3]);
+    // About three quarters of each streamed size's slots, 300 of 400 and 330
+    // of 440, and the lone size's 120, in elastic chunks of about 40 slots.
+    ExpertStoreOptions options =
+        storeOptions(arenaBytes(models[0], 300) + arenaBytes(models[2], 120) + arenaBytes(models[3], 330) +
+                         kSpareBytes,
+                     blocks, shape);
+    options.elasticChunkBytes = arenaBytes(models[0], 40);
+    ExpertStore store(backend, blocks, shape, options);
     std::vector<BlockMoeWeights> streamed;
     streamed.reserve(kBlocks.size());
     for (uint32_t block = 0; block < kBlocks.size(); ++block) {
@@ -395,37 +402,58 @@ int streamedLatentBlocks(MetalBackend &backend, const std::filesystem::path &dir
     }
     Buffers b;
     const int before = failures;
-    // Decode steps (lanes) and prefill chunks (rows) of fresh rows, the four
+    // Decode steps (lanes) and prefill chunks (rows) of fresh rows, the
     // blocks in turn, a decode step's blocks on the same rows.
-    for (const auto &[lanes, rows] : {std::pair{1u, 0u}, std::pair{4u, 0u}, std::pair{0u, 27u},
-                                      std::pair{0u, kMaximumRows}, std::pair{3u, 0u}, std::pair{0u, 9u}})
-      for (uint32_t block = 0; block < kBlocks.size(); ++block) {
-        const MoeShape &own = models[block].shape;
-        const MoePlan plan = lanes ? MoE::decodePlan(own, lanes, MoeConfig{}) : prefillPlan(own, rows);
-        if (block == 0 || !lanes) {
-          freshRows(backend, b, shape);
-          b.routerInput = activations(uint64_t{kMaximumRows} * shape.routerInput());
-          b.moe.routerInput = bfloatBuffer(backend, b.routerInput, "moe-router-input");
+    const auto run = [&](const char *when) {
+      for (const auto &[lanes, rows] : {std::pair{1u, 0u}, std::pair{4u, 0u}, std::pair{0u, 27u},
+                                        std::pair{0u, kMaximumRows}, std::pair{3u, 0u}, std::pair{0u, 9u}})
+        for (uint32_t block = 0; block < kBlocks.size(); ++block) {
+          const MoeShape &own = models[block].shape;
+          const MoePlan plan = lanes ? MoE::decodePlan(own, lanes, MoeConfig{}) : prefillPlan(own, rows);
+          if (block == 0 || !lanes) {
+            freshRows(backend, b, shape);
+            b.routerInput = activations(uint64_t{kMaximumRows} * shape.routerInput());
+            b.moe.routerInput = bfloatBuffer(backend, b.routerInput, "moe-router-input");
+          }
+          const std::vector<uint16_t> want = runWeights(backend, models[block].weights, b, plan);
+          const std::vector<uint16_t> got = runWeights(backend, streamed[block], b, plan);
+          if (got != want || !slotsHoldTheirExperts(models[block], streamed[block], b, plan)) {
+            printf("  %s %s %s rows=%u block %u: streamed experts differ from the resident experts FAIL\n",
+                   formats.c_str(), when, lanes ? "decode" : "prefill", plan.rows(), block);
+            ++failures;
+          }
         }
-        const std::vector<uint16_t> want = runWeights(backend, models[block].weights, b, plan);
-        const std::vector<uint16_t> got = runWeights(backend, streamed[block], b, plan);
-        if (got != want || !slotsHoldTheirExperts(models[block], streamed[block], b, plan)) {
-          printf("  %s %s rows=%u block %u: streamed experts differ from the resident experts FAIL\n",
-                 formats.c_str(), lanes ? "decode" : "prefill", plan.rows(), block);
-          ++failures;
-        }
-      }
-    const ExpertStoreStats stats = store.stats();
-    if (stats.slots >= 840 || !stats.uses[0].loads || !stats.uses[1].loads || !stats.failure.empty()) {
-      printf("  %s: %llu slots, %llu prefill and %llu decode loads%s%s FAIL\n", formats.c_str(),
-             (unsigned long long)stats.slots, (unsigned long long)stats.uses[0].loads,
-             (unsigned long long)stats.uses[1].loads, stats.failure.empty() ? "" : ", failed: ",
-             stats.failure.c_str());
+    };
+    run("at the cap");
+    const ExpertStoreStats cap = store.stats();
+    if (cap.slots >= 960 || cap.capChunks < 4 || !cap.uses[0].loads || !cap.uses[1].loads || !cap.failure.empty()) {
+      printf("  %s: %llu slots in %llu chunks, %llu prefill and %llu decode loads%s%s FAIL\n", formats.c_str(),
+             (unsigned long long)cap.slots, (unsigned long long)cap.capChunks,
+             (unsigned long long)cap.uses[0].loads, (unsigned long long)cap.uses[1].loads,
+             cap.failure.empty() ? "" : ", failed: ", cap.failure.c_str());
       ++failures;
     }
-    printf("%-41s latent blocks of 240/160 experts 512 wide and 240/200 640 wide streamed in %llu slots, "
-           "decode B1/3/4 and prefill 9/27/263: bitwise the resident experts' %s\n",
-           formats.c_str(), (unsigned long long)stats.slots, failures > before ? "FAIL" : "ok");
+    // Down to the floors a chunk at a time and back up to the cap.
+    uint32_t shrinks = 0;
+    while (store.releaseAboveFloor()) ++shrinks;
+    const ExpertStoreStats floor = store.stats();
+    run("at the floor");
+    uint32_t grows = 0;
+    while (store.growthBytes() && store.growTowardCap(splash::test::admitAll)) ++grows;
+    run("grown back");
+    const ExpertStoreStats grown = store.stats();
+    if (!shrinks || shrinks != grows || floor.slots >= cap.slots || grown.slots != cap.slots ||
+        grown.chunks != cap.capChunks || !grown.failure.empty()) {
+      printf("  %s: %u chunks given back to %llu slots and %u taken back to %llu of %llu slots FAIL\n",
+             formats.c_str(), shrinks, (unsigned long long)floor.slots, grows, (unsigned long long)grown.slots,
+             (unsigned long long)cap.slots);
+      ++failures;
+    }
+    printf("%-41s latent blocks of 240/160 experts 512 wide and 240/200 640 wide streamed in %llu slots beside "
+           "120 384 wide whole, decode B1/3/4 and prefill 9/27/263 at the cap, the floor (%llu slots) and grown "
+           "back: bitwise the resident experts' %s\n",
+           formats.c_str(), (unsigned long long)cap.slots, (unsigned long long)floor.slots,
+           failures > before ? "FAIL" : "ok");
   }
   return failures;
 }
