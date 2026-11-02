@@ -451,7 +451,7 @@ uint64_t DFlashDraft::allocatedLiLiCorrBytes() const noexcept {
         &s.attention, &s.projected, &s.mlp, &s.anchorInput, &s.anchorProjected, &s.anchorState, &s.anchorRows,
         &s.anchorOut, &s.outHead, &s.inHead, &s.linear.input, &s.linear.sums, &s.linear.partials,
         &s.linear.counters, &s.linear.rotated})
-    bytes += buffer->sizeBytes();
+    bytes += buffer->allocatedBytes();
   return bytes;
 }
 
@@ -459,10 +459,10 @@ void DFlashDraft::allocateLiLiCorr() {
   const std::vector<uint64_t> bytes = ops::LiLiCorr::scratchBytes(weights_.layout.hiddenSize);
   std::vector<metal::MetalBuffer> views;
   for (uint64_t size : bytes)
-    views.push_back(backend_.allocateBuffer(size, metal::BufferStorage::Shared, "lilicorr-scratch"));
+    views.push_back(backend_.allocateBuffer(alignUp(size), metal::BufferStorage::Shared, "lilicorr-scratch"));
   const ops::LinearScratchSize size = liLiCorrLinear(*weights_.lilicorr, operators_);
   const auto optional = [&](uint64_t bytes) {
-    return bytes ? backend_.allocateBuffer(bytes, metal::BufferStorage::Shared, "lilicorr-linear")
+    return bytes ? backend_.allocateBuffer(alignUp(bytes), metal::BufferStorage::Shared, "lilicorr-linear")
                  : metal::MetalBuffer{};
   };
   lilicorr_ = ops::LiLiCorrScratch{views[0],  views[1],  views[2],  views[3],  views[4],  views[5],  views[6],
@@ -470,6 +470,10 @@ void DFlashDraft::allocateLiLiCorr() {
                                    views[14], views[15], views[16], views[17], views[18], views[19],
                                    {optional(size.input), optional(size.sums), optional(size.partials),
                                     optional(size.counters), optional(size.rotated)}};
+  // The plan charges these whole pages (liLiCorrBytes), which Metal must
+  // allocate no more than.
+  if (allocatedLiLiCorrBytes() != liLiCorrBytes(weights_, operators_))
+    throw std::logic_error("LiLiCorr's scratch is not the memory plan's");
 }
 
 // A LiLiCorr selector's sections of model.bin, in DraftCheckpoint.cpp's

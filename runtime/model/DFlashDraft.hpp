@@ -301,7 +301,7 @@ public:
   // `weights`, each buffer's in whole host pages; zero without one. The
   // memory plan charges them to shared decode.
   [[nodiscard]] static uint64_t liLiCorrBytes(const DFlashDraftWeights &weights, const ops::ExecutionPlans &operators);
-  // What allocateLiLiCorr allocated.
+  // What allocateLiLiCorr allocated, as Metal counts it.
   [[nodiscard]] uint64_t allocatedLiLiCorrBytes() const noexcept;
   // Sets each of `lanes` lanes' mask rows of the draft input `rows` (all but
   // its anchor's, row 0 of its draftQueryRows) to the mask embedding the
