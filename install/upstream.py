@@ -850,7 +850,7 @@ def _gguf_draft(repo, name, target):
     configuration, derived from its header, checked before the download;
     publish derives its checkpoint (assembly.derived_draft)."""
     with repo.open(name) as stream:
-        header = gguf.Metadata(stream)
+        header = gguf.Metadata(stream, tensors=True)
     try:
         config = dflash_gguf.config_bytes(header)
     except models.ModelError as error:

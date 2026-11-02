@@ -28,6 +28,12 @@ SELECTOR_TOP_K = 16
 # 74B-A9B-24GB-LiLiCorr, config.json), which its GGUF does not state.
 MASK_TOKEN_ID = 990
 VOCABULARY = 131072
+# The engine's draft context ring (ExecutionLimits::draftContextTokens): a
+# draft trained over a wider window (Super's 8192) sees the ring's positions.
+# ponytail: Super's draft also states RMS epsilon 1e-5 and its own output
+# head; it runs with the kernels' 1e-6 and the target's head, which costs
+# acceptance only. Add both if its acceptance falls short of Bolt's.
+RING_WINDOW = 2048
 
 
 def _ue4m3():
@@ -79,7 +85,7 @@ def _repeat_heads(value, heads, times):
     return np.repeat(rows, times, axis=0).reshape(-1, value.shape[-1])
 
 
-def _tensors(layers):
+def _tensors(layers, sinks=True):
     """(checkpoint name, GGUF tensor) of every weight, in the names Splash's
     DFlash2 loader and LiLiCorr selector read."""
     yield "fc.weight", "fc.weight"
@@ -105,7 +111,8 @@ def _tensors(layers):
             ("mlp.down_proj.weight", "ffn_down.weight"),
             ("self_attn.sinks", "attn_sinks.weight"),
         ):
-            yield p + name, b + source
+            if sinks or name != "self_attn.sinks":
+                yield p + name, b + source
     # The selector: its feature MLP is the block after its two layers.
     feature = f"blk.{layers + 2}."
     for name, source in (
@@ -197,8 +204,9 @@ def config(header):
             "rope_theta": value("dflash.rope.freq_base"),
             "rope_type": "default",
         },
-        "sliding_window": value("dflash.attention.sliding_window"),
-        "attention_sink_bias": True,
+        "sliding_window": min(value("dflash.attention.sliding_window"), RING_WINDOW),
+        # Bolt's draft adds a sink logit per query head; Super's has none.
+        "attention_sink_bias": "blk.0.attn_sinks.weight" in header.tensors,
         "tie_word_embeddings": False,
         "vocab_size": VOCABULARY,
     }
@@ -224,7 +232,7 @@ def write_checkpoint(path, stage):
     kv_heads = values["dflash.attention.head_count_kv"]
     alignment = values.get("general.alignment", 32)
     data = (header.consumed + alignment - 1) // alignment * alignment
-    sources = dict(_tensors(layers))
+    sources = dict(_tensors(layers, "blk.0.attn_sinks.weight" in header.tensors))
     missing = sorted(set(sources.values()) - set(header.tensors))
     if missing:
         raise ModelError(f"draft GGUF lacks tensors: {', '.join(missing[:3])}")

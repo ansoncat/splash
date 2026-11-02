@@ -591,14 +591,24 @@ struct NemotronHGguf final {
   template <class Expect, class ExpectFloat>
   static void metadata(const Expect &, const ExpectFloat &, const QwenTargetDimensions &) {}
 
+  // Super's GGUFs state its epsilon as attention.layer_norm_epsilon and no
+  // gating function, which llama.cpp takes as sigmoid; they hold an MTP
+  // layer after the target's (nextn_predict_layers), which is never loaded.
   template <class Expect, class ExpectFloat>
-  static void requireMetadata(const Expect &expect, const ExpectFloat &expectFloat, const QwenTargetDimensions &g) {
-    expect("block_count", g.layers);
+  static void requireMetadata(const GgufMetadata &metadata, const Expect &expect, const ExpectFloat &expectFloat,
+                              const QwenTargetDimensions &g) {
+    const std::string arch(architecture);
+    const auto present = [&](const char *key) {
+      return metadata.unsignedValue(arch + "." + key) || metadata.floatValue(arch + "." + key);
+    };
+    expect("block_count", g.layers + metadata.unsignedValue(arch + ".nextn_predict_layers").value_or(0));
     expect("embedding_length", g.hiddenSize);
     expect("attention.head_count", g.attentionQueryHeads);
     expect("attention.key_length", g.attentionHeadDimension);
     expect("attention.value_length", g.attentionHeadDimension);
-    expectFloat("attention.layer_norm_rms_epsilon", kLayout.rmsEpsilon);
+    expectFloat(present("attention.layer_norm_rms_epsilon") ? "attention.layer_norm_rms_epsilon"
+                                                            : "attention.layer_norm_epsilon",
+                kLayout.rmsEpsilon);
     expect("ssm.conv_kernel", kGdnConvolutionTaps);
     expect("ssm.group_count", g.gdnKeyHeads);
     expect("ssm.time_step_rank", g.gdnValueHeads);
@@ -608,7 +618,7 @@ struct NemotronHGguf final {
     expect("expert_shared_feed_forward_length", kLayout.sharedIntermediateSize);
     expect("expert_shared_count", 1);
     expect("moe_latent_size", kLayout.moeLatentSize);
-    expect("expert_gating_func", 2); // sigmoid
+    if (present("expert_gating_func")) expect("expert_gating_func", 2); // sigmoid
     expect("expert_weights_norm", 1);
     expectFloat("expert_weights_scale", kLayout.routedScale);
   }
@@ -619,15 +629,19 @@ struct NemotronHGguf final {
   static void arrays(const GgufFile &file, const QwenTargetDimensions &g) {
     const std::string arch(architecture);
     std::string mismatched;
+    // A scalar, as Super's GGUFs state expert_used_count and
+    // expert_feed_forward_length, is every layer's that has one.
     const auto check = [&](const char *key, auto value) {
       const auto found = file.numericArray(arch + "." + key);
-      bool ok = found && found->size() >= g.layers;
-      for (uint32_t layer = 0; ok && layer < g.layers; ++layer) ok = (*found)[layer] == value(layer);
+      const auto scalar = file.metadata().unsignedValue(arch + "." + key);
+      bool ok = (found && found->size() >= g.layers) || scalar;
+      for (uint32_t layer = 0; ok && layer < g.layers; ++layer)
+        ok = found ? (*found)[layer] == value(layer) : !value(layer) || *scalar == value(layer);
       if (!ok) mismatched += (mismatched.empty() ? "" : ", ") + std::string(key);
     };
     const auto moe = [](uint32_t layer) { return NemotronHLayout::block(layer) == NemotronBlock::Moe; };
-    check("feed_forward_length", [](uint32_t layer) { return NemotronHLayout::layerExpertWidth(layer); });
-    check("expert_feed_forward_length", [](uint32_t layer) { return NemotronHLayout::layerExpertWidth(layer); });
+    check("feed_forward_length", [&](uint32_t layer) { return NemotronHLayout::layerExpertWidth(g, layer); });
+    check("expert_feed_forward_length", [&](uint32_t layer) { return NemotronHLayout::layerExpertWidth(g, layer); });
     check("attention.head_count_kv", [&](uint32_t layer) {
       return NemotronHLayout::block(layer) == NemotronBlock::Attention ? g.attentionKvHeads : 0;
     });
@@ -672,8 +686,8 @@ struct NemotronHGguf final {
       break;
     }
     case NemotronBlock::Moe: {
-      const uint64_t experts = NemotronHLayout::layerExperts(index),
-                     width = NemotronHLayout::layerExpertWidth(index), latent = kLayout.moeLatentSize,
+      const uint64_t experts = NemotronHLayout::layerExperts(g, index),
+                     width = NemotronHLayout::layerExpertWidth(g, index), latent = kLayout.moeLatentSize,
                      shared = kLayout.sharedIntermediateSize;
       b.floatTensor(p + "ffn_gate_inp.weight", experts, hidden);
       b.floatNorm(p + "exp_probs_b.bias", experts);
@@ -961,7 +975,7 @@ void requireMetadata(const GgufMetadata &metadata, std::string_view architecture
     mismatched += text.str();
   };
   if (architecture == NemotronHGguf::architecture) {
-    NemotronHGguf::requireMetadata(expect, expectFloat, geometry);
+    NemotronHGguf::requireMetadata(metadata, expect, expectFloat, geometry);
     if (!mismatched.empty()) throw GgufError("GGUF metadata does not match the target: " + mismatched);
     return;
   }

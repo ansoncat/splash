@@ -546,9 +546,14 @@ def radio_vision_config(vision):
     result = {
         name: vision.positive("clip.vision." + key) for name, key in fields.items()
     }
-    extents = vision.extents.get("v.position_embd.weight")
-    if not extents or len(extents) != 2 or extents[0] != result["hidden_size"]:
+    extents = vision.extents.get("v.position_embd.weight") or ()
+    if extents[2:] == (1,):  # Super's mmproj states a third extent of 1
+        extents = extents[:2]
+    if len(extents) != 2 or extents[0] != result["hidden_size"]:
         raise ModelError("invalid GGUF vision position grid")
+    # Super's tower ends in a LayerNorm (v.post_ln), Bolt's does not.
+    if "v.post_ln.weight" in vision.extents:
+        result["final_norm"] = True
     result.update(
         temporal_patch_size=1,
         in_channels=3,
@@ -893,6 +898,9 @@ def nemotron_blocks(metadata):
     arrays = {}
     for key in ("feed_forward_length", "attention.head_count_kv", "expert_used_count"):
         value = metadata.values.get(f"{arch}.{key}")
+        # Super's GGUFs state the experts each MoE takes as one scalar.
+        if key == "expert_used_count" and type(value) is int:
+            value = [value if ffn else 0 for ffn in arrays["feed_forward_length"]]
         if (
             type(value) is not list
             or len(value) < layers

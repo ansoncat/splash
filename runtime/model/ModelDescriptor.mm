@@ -829,6 +829,9 @@ ModelDescriptor describeSourceModel(std::string name, std::string_view targetFor
   ops::VisionLayout vision =
       std::holds_alternative<NemotronHLayout>(*target) ? ops::kRadioVisionLayout : ops::VisionLayout{};
   vision.outputHiddenSize = std::visit([](const auto &layout) { return layout.hiddenSize; }, *target);
+  // RADIO's final norm is its mmproj's (install/gguf.py radio_vision_config).
+  if (ops::isRadioVision(vision))
+    vision.finalNorm = [config[@"vision_config"][@"final_norm"] isEqual:@YES];
   ModelDescriptor result =
       makeModelDescriptor(std::move(name), *target, dflashLayout, vision, targetSource, visionSource);
   if (result.hasVision())

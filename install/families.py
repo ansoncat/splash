@@ -56,6 +56,9 @@ FAMILIES = (
         NEMOTRON,
         state_formats=("fp32",),
     ),
+    # No draft is installed for it yet: an installation names one with
+    # --draft-model, or serves the target alone as Bolt can.
+    ModelFamily("Nemotron-3.5-Super", None, NEMOTRON, state_formats=("fp32",)),
 )
 
 

@@ -52,7 +52,7 @@ NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout,
   }
   case NemotronBlock::Moe: {
     NemotronMoeWeights m;
-    const uint32_t count = NemotronHLayout::layerExperts(index);
+    const uint32_t count = NemotronHLayout::layerExperts(layout, index);
     m.experts.router = readQuantizedSegment(file, "router");
     m.experts.selectionBias = f32(count, "exp-probs-bias");
     m.latentDown = readBlockProjection(file, layout.moeLatentSize, layout.hiddenSize, "latent-down");
@@ -72,7 +72,7 @@ NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout,
     const ops::QuantizedSegment &up = m.experts.up.routed, &down = m.experts.down.routed;
     m.shape = layout.moeBlockShape();
     m.shape.experts = count;
-    m.shape.expertIntermediateSize = NemotronHLayout::layerExpertWidth(index);
+    m.shape.expertIntermediateSize = NemotronHLayout::layerExpertWidth(layout, index);
     m.shape.expertFormat = up.formatId;
     m.shape.registerFormats =
         quant_register_tensor(up.formatId, up.inputSize) && quant_register_tensor(down.formatId, down.inputSize);
