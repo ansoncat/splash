@@ -6,6 +6,19 @@
 
 **A local inference engine for Apple silicon, built around the model.**
 
+> **This is a fork of [incoai/splash](https://github.com/incoai/splash).** It adds
+> NVIDIA Nemotron 3.5 Bolt (74B-A9B) and Nemotron 3.5 Super VL (120B-A12B), with
+> NVIDIA's LiLiCorr drafts, RADIO vision, and SSD expert streaming for both
+> ([Nemotron 3.5](#nemotron-35-this-fork)). Everything else is upstream.
+>
+> - `nemotron` (this default branch): all of the fork's changes, rebased on upstream.
+> - `main`: tracks upstream unchanged.
+> - Other branches hold changes proposed upstream, such as `nemotron-3.5-bolt` for [incoai/splash#633](https://github.com/incoai/splash/issues/633).
+>
+> The desktop app and Homebrew formula below are upstream's and don't include
+> these changes. Build this branch from source instead
+> ([Build and run](docs/server.md#build-and-run)).
+
 Splash runs coding agents and OpenAI or Anthropic compatible applications on
 one Mac. It combines [DFlash 2](https://inco.ai/blog/dflash2/) speculative
 decoding, specialized Metal kernels, and automatic memory planning, with
@@ -107,6 +120,42 @@ reported by the API. Omit `--draft-model` to use the family's draft from the
 Hub cache, or add `--mmproj /models/mmproj-BF16.gguf` for a GGUF's vision.
 See [local model files](docs/models.md#local-model-files) for details.
 
+### Nemotron 3.5 (this fork)
+
+Bolt's draft is NVIDIA's `NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-LiLiCorr-GGUF`,
+picked automatically. NVIDIA ships it only as a GGUF, so the installer converts
+it once into a BF16 DFlash2 checkpoint.
+
+```bash
+./splash serve --model nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
+```
+
+Super has no automatic draft. Download the target, the LiLiCorr draft from
+`ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF` and an mmproj, install
+them from local files, and serve the root it prints:
+
+```bash
+.venv/bin/python -m install.local /models/Super/UD-IQ2_XXS/<first shard>.gguf \
+  --draft-model /models/Super/ggml-org/LiLiCorr --mmproj /models/Super/mmproj-BF16.gguf \
+  --models /models/splash
+./splash serve --model local/Super --model-dir <printed root>
+```
+
+- Use ggml-org's Super LiLiCorr, not unsloth's: unsloth's doesn't match the
+  official config (2 KV heads, no window, YaRN).
+- The Mamba-2 state is fp32 only; `--state-format bf16` is refused.
+- Vision takes still images only; no audio or video.
+- The kernels cover these two models' shapes only. Other Nemotron-H geometries
+  are refused.
+- When the experts don't fit, `--expert-memory auto` streams the routed experts
+  from the SSD, as for the other MoE families.
+- Super's official NVFP4 GGUF loads too: its routed down projection has
+  2,688-wide rows, which load as NVFP4G64
+  ([formats](docs/models.md#gguf-targets)).
+- The Super draft runs with three approximations: the window is capped at 2,048,
+  ε is 1e-6, and the draft's own output head isn't used. They lower acceptance
+  only; the output is the target's.
+
 ## Settings
 
 Memory and context are sized automatically, up to the model's native context
@@ -178,6 +227,43 @@ That is **2.5–3.2×** as fast on the 35B and **4.5–5.3×** on the 27B
 
 Splash uses BF16 KV and `--disable-ane` in this comparison.
 [Benchmark details](docs/performance.md#gguf-against-llamacpp)
+
+### Nemotron 3.5 on this fork
+
+Measured by the fork's maintainer on an M5 Pro (20-core GPU, 64 GB): greedy,
+thinking off, prefix cache off, runs of each engine interleaved in one session.
+These are not upstream's numbers.
+
+Bolt against llama.cpp (b11681 with its DFlash draft), decode speed in tok/s:
+
+| Prompt | llama.cpp | **Splash** | Ratio |
+| --- | ---: | ---: | ---: |
+| Code | 45–46 | **115–120** | 2.5–2.6× |
+| English prose | 34–40 | **62–68** | 1.6–2.0× |
+| Traditional Chinese prose | 30–32 | **49–55** | 1.6–1.9× |
+| 33K-token document, explained | 30 | **61** | 2.1× |
+
+Time to first token is 1.6× as fast at 2K, 5K and 33K tokens. llama.cpp runs a
+copy of the official GGUF with the Mamba tensors in Q8_0, since its Metal
+backend doesn't run them in NVFP4; Splash runs the official GGUF.
+
+- **Bolt with streamed experts**, `--max-memory 20G`: about 0.7× the resident
+  decode speed, with logits bit-identical to resident. This was simulated on the
+  64 GB Mac and hasn't been run on a 32 GB one.
+- **Super VL**, UD-IQ2_XXS: all experts resident on 64 GB, 147K-token automatic
+  context, decode 0.54–0.75× Bolt's.
+
+| Model | GGUF | Experts on 64 GB | Decode |
+| --- | --- | --- | --- |
+| Bolt | NVIDIA NVFP4 (24 GB) | resident | baseline |
+| Bolt | unsloth UD-IQ2_XXS | resident | 0.94–1.19× |
+| Super VL | unsloth UD-IQ2_XXS (47.6 GiB) | resident | baseline |
+| Super VL | unsloth UD-IQ3_XXS (55.7 GiB) | 78% resident, streamed | 0.56–0.70× |
+| Super VL | ggml-org NVFP4 (71.6 GiB) | 47% resident, streamed | 0.16–0.29× |
+
+On HumanEval+, BFCL and a Traditional Chinese check, the measured quantizations
+of each model showed no clear quality difference (Super's NVFP4 wasn't
+measured). The maintainer runs Bolt's NVFP4 and Super's UD-IQ2_XXS.
 
 ## Design
 
