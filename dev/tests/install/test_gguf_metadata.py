@@ -572,8 +572,9 @@ class GgufMetadataTests(unittest.TestCase):
             0
         ]
         # Each format's GGML type, by format id: its table type, or for NVFP4
-        # llama.cpp's, which the planner converts into it (ggml::kNVFP4 in
-        # runtime/model/GgufFile.hpp); MLX affine and fp8 have none.
+        # and NVFP4G64 llama.cpp's, which the planner converts into them
+        # (ggml::kNVFP4 in runtime/model/GgufFile.hpp); MLX affine and fp8
+        # have none.
         ids = {
             name: int(value)
             for name, value in re.findall(r"#define GGUF_FMT_(\w+) (\d+)u", header)
@@ -586,7 +587,8 @@ class GgufMetadataTests(unittest.TestCase):
         }
         gguf_file = (abi.parents[1] / "model/GgufFile.hpp").read_text()
         nvfp4 = re.search(r"kNVFP4 = (\d+)", gguf_file).group(1)
-        types[ids["NVFP4"]] = gguf.TENSOR_TYPES[int(nvfp4)]
+        for name in ("NVFP4", "NVFP4G64"):
+            types[ids[name]] = gguf.TENSOR_TYPES[int(nvfp4)]
         self.assertEqual(set(types.values()), gguf.FORMAT_TYPES)
         # gguf_embedding_format must keep a form this reads, every format but
         # those it names with !=, so that another form fails here instead of

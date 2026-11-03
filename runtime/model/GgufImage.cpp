@@ -33,10 +33,14 @@ static_assert([] {
   return true;
 }(), "a meta unit is one native block");
 
-// The format whose native rows hold a GGUF tensor of `type`: the table's, or
-// NVFP4's for llama.cpp's NVFP4, whose block_nvfp4 rows the writer builds
-// NVFP4's native rows from (TensorRows::ggufNvfp4RowBytes).
-uint32_t imageFormat(uint32_t type) { return type == ggml::kNVFP4 ? GGUF_FMT_NVFP4 : gguf_format_of(type); }
+// The format whose native rows hold a GGUF tensor of `type` whose planes are
+// `columns` wide: the table's, or for llama.cpp's NVFP4, whose block_nvfp4
+// rows the writer builds native rows from (TensorRows::ggufNvfp4RowBytes),
+// NVFP4's, or NVFP4G64's where the rows are not whole 256s.
+uint32_t imageFormat(uint32_t type, uint64_t columns = 0) {
+  if (type == ggml::kNVFP4) return columns % 256 ? GGUF_FMT_NVFP4G64 : GGUF_FMT_NVFP4;
+  return gguf_format_of(type);
+}
 
 bool quantizedType(uint32_t type) { return imageFormat(type) != GGUF_FMT_COUNT; }
 bool floatType(uint32_t type) { return type == ggml::kF32; }
@@ -111,10 +115,11 @@ public:
     if (!tensor) return;
     if (tensor->rows() != rows || tensor->columns() != windows * columns)
       throw GgufError("unexpected shape for " + name);
-    const uint32_t format = imageFormat(tensor->type);
+    const uint32_t format = imageFormat(tensor->type, columns);
     Repack repack = image_.planes(format, windows * rows, columns, name);
     for (uint32_t window = 0; window < windows; ++window) {
-      TensorRows source = tensorRows(*tensor, rows, ggufRowBytes(kQuantFormats[format], windows * columns), order);
+      TensorRows source =
+          tensorRows(*tensor, rows, ggufRowBytes(kQuantFormats[format], windows * columns), order, format);
       source.windows = windows;
       source.window = window;
       repack.sources.push_back(std::move(source));
@@ -145,7 +150,7 @@ public:
     const GgufTensor *tensor = find(name, quantizedType);
     if (!tensor) return;
     if (tensor->rows() != rows || tensor->columns() != columns) throw GgufError("unexpected shape for " + name);
-    const uint32_t format = imageFormat(tensor->type);
+    const uint32_t format = imageFormat(tensor->type, columns);
     Repack repack = image_.expertPlanes(format, rows, columns, name);
     repack.sources.push_back(tensorRows(*tensor, rows, ggufRowBytes(kQuantFormats[format], columns)));
     image_.expertRepack(std::move(repack));
@@ -164,7 +169,7 @@ public:
     } else if (const GgufTensor *fused = find(fusedName, quantizedType)) {
       if (fused->rows() != 2 * experts * width || fused->columns() != hidden)
         throw GgufError("unexpected shape for " + fusedName);
-      const uint32_t format = imageFormat(fused->type);
+      const uint32_t format = imageFormat(fused->type, hidden);
       const TensorRows rows = tensorRows(*fused, 2 * experts * width, ggufRowBytes(kQuantFormats[format], hidden));
       // Expert e's gate rows are rows 2e width.. of the fused tensor, its up rows the next width.
       for (const uint64_t up : {0, 1}) {
@@ -216,7 +221,7 @@ public:
       uint64_t destination = image_.section(2 * heads * rowBytes);
       for (const GgufTensor *t : {beta, alpha}) {
         if (quantizedType(t->type) && !bfloat16) {
-          const uint64_t native = ggufRowBytes(kQuantFormats[imageFormat(t->type)], hidden);
+          const uint64_t native = ggufRowBytes(kQuantFormats[imageFormat(t->type, hidden)], hidden);
           image_.copyAt(destination, tensorRows(*t, heads, native, grouped(0, 1)), Conversion::DequantizeToFloat32);
         } else {
           image_.copyAt(destination, tensorRows(*t, heads, t->bytes / heads, grouped(0, 1)), Conversion::None);
@@ -225,7 +230,7 @@ public:
       }
       return;
     }
-    const uint32_t format = imageFormat(beta->type);
+    const uint32_t format = imageFormat(beta->type, hidden);
     const uint64_t rowBytes = ggufRowBytes(kQuantFormats[format], hidden);
     Repack repack = image_.planes(format, tiledRows(2ull * heads), hidden, alphaName);
     for (const GgufTensor *t : {beta, alpha}) repack.sources.push_back(tensorRows(*t, heads, rowBytes, grouped(0, 1)));
@@ -355,8 +360,10 @@ private:
   // multiplies a projection's products by its .scale, of one value, or an
   // expert's by its value of an experts tensor's (_exps), one per expert;
   // only NVFP4's native rows hold such a scale, so a .scale beside any other
-  // tensor is refused.
-  TensorRows tensorRows(const GgufTensor &tensor, uint64_t count, uint64_t rowBytes, RowOrder order = {}) const {
+  // tensor is refused. `format` is the NVFP4 format of planes narrower than
+  // the tensor's rows (quantized's windows), else imageFormat's.
+  TensorRows tensorRows(const GgufTensor &tensor, uint64_t count, uint64_t rowBytes, RowOrder order = {},
+                        uint32_t format = GGUF_FMT_COUNT) const {
     const std::string stem = tensor.name.ends_with(".weight") ? tensor.name.substr(0, tensor.name.size() - 7) : "";
     const GgufTensor *scale = stem.empty() ? nullptr : file_.find(stem + ".scale");
     if (tensor.type != ggml::kNVFP4) {
@@ -373,14 +380,15 @@ private:
       }
       return rows;
     }
-    const QuantFormat &format = kQuantFormats[GGUF_FMT_NVFP4];
+    const QuantFormat &native =
+        kQuantFormats[format == GGUF_FMT_COUNT ? imageFormat(tensor.type, tensor.columns()) : format];
     const GgmlTypeTraits &blocks = *ggmlTypeTraits(ggml::kNVFP4);
     const uint64_t sourceRowBytes =
-        rowBytes / format.block_bytes * (format.block_elements / blocks.blockElements) * blocks.blockBytes;
-    if (!count || rowBytes % format.block_bytes || count * sourceRowBytes != tensor.bytes)
-      throw GgufError(tensor.name + "'s rows are not whole nvfp4 blocks of " + std::to_string(format.block_elements) +
+        rowBytes / native.block_bytes * (native.block_elements / blocks.blockElements) * blocks.blockBytes;
+    if (!count || rowBytes % native.block_bytes || count * sourceRowBytes != tensor.bytes)
+      throw GgufError(tensor.name + "'s rows are not whole nvfp4 blocks of " + std::to_string(native.block_elements) +
                       " elements");
-    TensorRows rows{tensor.name, QUANT_NVFP4_TYPE, tensor.offset, count, rowBytes, order, &file_.source(tensor.file)};
+    TensorRows rows{tensor.name, native.ggml_type, tensor.offset, count, rowBytes, order, &file_.source(tensor.file)};
     rows.ggufNvfp4RowBytes = sourceRowBytes;
     if (scale) {
       const uint64_t values = stem.ends_with("_exps") ? geometry_.experts : 1;
@@ -394,7 +402,7 @@ private:
 
   // The bytes of a row of a tensor's native blocks.
   static uint64_t nativeRowBytes(const GgufTensor &tensor) {
-    return ggufRowBytes(kQuantFormats[imageFormat(tensor.type)], tensor.columns());
+    return ggufRowBytes(kQuantFormats[imageFormat(tensor.type, tensor.columns())], tensor.columns());
   }
   // The bytes of a row of an F32 or BF16 tensor's values as stored, never
   // BF16's native rows: a row need not be whole blocks of 256 values.
@@ -1032,7 +1040,7 @@ StreamedRows tableRows(const GgufFile &file, const std::string &name, uint64_t c
   if (!embeddingType(tensor.type) || tensor.type == ggml::kNVFP4)
     throw GgufError("a table of type " + ggmlTypeName(tensor.type) + " does not stream: " + name);
   if (tensor.columns() != columns || !tensor.rows()) throw GgufError("unexpected shape for " + name);
-  const uint32_t format = imageFormat(tensor.type);
+  const uint32_t format = imageFormat(tensor.type, tensor.columns());
   const uint64_t rowBytes = ggufRowBytes(kQuantFormats[format], tensor.columns());
   if (!rowBytes || rowBytes > UINT32_MAX || tensor.rows() * rowBytes != tensor.bytes)
     throw GgufError("unexpected size for " + name);
