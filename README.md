@@ -188,11 +188,12 @@ Not done yet:
   embedding aren't ported.
 - The kernels cover these two models' shapes only, as for every family; other
   Nemotron-H geometries are refused until they get their own variants.
-- The Super draft runs with three approximations: its window is capped at the
-  engine's 2,048-token draft context (Super's is 8,192), ε is the kernels' 1e-6
-  (Super's is 1e-5), and the target's output head stands in for the draft's
-  own. They lower acceptance only, the output is the target's, and acceptance
-  already matches Bolt's.
+- Super's draft states its own window of 8,192 tokens; it sees the engine's
+  2,048-token draft context, a compile-time size of every draft kernel. Its
+  acceptance at 33K tokens matches short prompts', so the window stays until a
+  prompt shows a drop. Its other two settings make no difference: its output
+  head is the target's rounded to NVFP4, and its ε of 1e-5 against the
+  kernels' 1e-6 changes its norms by under one part in a million.
 
 ## Settings
 
