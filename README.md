@@ -184,8 +184,9 @@ Not done yet:
 
 - The Mamba-2 state is fp32 only; `--state-format bf16` is refused. A BF16 state
   needs its own kernels and a check of its error over long conversations.
-- Vision takes still images only. The models' audio tower and video patch
-  embedding aren't ported.
+- Vision takes still images only. Both models also take video (mp4 frames,
+  two to a temporal patch), but Splash's API refuses video for every model, and
+  the video path isn't ported. Neither model has an audio encoder.
 - The kernels cover these two models' shapes only, as for every family; other
   Nemotron-H geometries are refused until they get their own variants.
 - Super's draft states its own window of 8,192 tokens; it sees the engine's
