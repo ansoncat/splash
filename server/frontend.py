@@ -110,6 +110,9 @@ COMPLETION_DEFAULT_MAX_TOKENS = 16
 
 # A stable marker lets repeated image requests reuse the compiled template.
 IMAGE_RENDER_MARKER = f"__splash_image_{secrets.token_hex(16)}__"
+VIDEO_RENDER_MARKER = f"__splash_video_{secrets.token_hex(16)}__"
+# The most time one video's decoding may take.
+VIDEO_SECONDS = 120.0
 
 
 def _generation_prompt(probed, rendered, tokens):
@@ -248,6 +251,9 @@ class Frontend:
         thinking_codec,
         vision,
         max_image_pixels=image_input.MAX_PIXELS,
+        video_decoder=None,
+        video_fps=image_input.VIDEO_FPS,
+        video_max_frames=image_input.VIDEO_MAX_FRAMES,
         served_model_names=(),
         announce_served_name=False,
         default_reasoning_effort=None,
@@ -296,6 +302,11 @@ class Frontend:
         self.request_timeout = request_timeout
         self.constraint_factory = constraint_factory
         self.max_image_pixels = max_image_pixels
+        # The splash binary that decodes video (video-frames), where the
+        # family takes video; None rejects it.
+        self.video_decoder = video_decoder if chat_format.video_pad else None
+        self.video_fps = video_fps
+        self.video_max_frames = video_max_frames
         self.images = image_input.ImageCache()
         self.ids = count(1)
         self.preparation_capacity = preparation_capacity
@@ -354,38 +365,65 @@ class Frontend:
 
     def _prepare_images(self, messages, deadline, *, check_context=True):
         """Prepared images in template render order: content parts in message
-        order, images in document order."""
+        order, images in document order, each video's tubelets in its place.
+        `videos` holds each video's tubelet labels, in order."""
         parts = [
             part
             for message in messages
             if isinstance(message.get("content"), list)
             for part in message["content"]
-            if part.get("type") == "image_url"
+            if part.get("type") in ("image_url", "video_url")
         ]
         limit = wire.MAX_IMAGE_SPANS
         if len(parts) > limit:
             raise APIError(400, f"requests support at most {limit} images")
         prepared = self.images.request_batch()
+        prepared.videos = []
         tokens = pixel_bytes = 0
         for part in parts:
             # An image can take a few hundred milliseconds to decode; an
             # expired request starts no more of them.
-            remaining_request_time(deadline)
+            remaining = remaining_request_time(deadline)
             try:
-                payload = image_input.decode_data_url(part["image_url"]["url"])
-                image = self.images.prepare(
-                    payload, self.max_image_pixels, self.chat_format.image_resize
-                )
-                tokens += image.tokens
-                pixel_bytes += len(image.pixels)
-                self._check_image_request_size(
-                    tokens,
-                    len(prepared) + 1,
-                    pixel_bytes,
-                    check_context=check_context,
-                    image_tokens_only=True,
-                )
-                prepared.append(image)
+                if part["type"] == "video_url":
+                    if self.video_decoder is None:
+                        raise APIError(400, "video input is not supported by this model")
+                    payload = image_input.decode_data_url(
+                        part["video_url"]["url"], "video", image_input.MAX_VIDEO_BYTES
+                    )
+                    video = self.images.prepare_video(
+                        payload,
+                        self.video_decoder,
+                        self.video_fps,
+                        self.video_max_frames,
+                        min(VIDEO_SECONDS, remaining),
+                    )
+                    items = video.tubelets
+                    prepared.videos.append(video.labels)
+                else:
+                    payload = image_input.decode_data_url(part["image_url"]["url"])
+                    items = (
+                        self.images.prepare(
+                            payload, self.max_image_pixels, self.chat_format.image_resize
+                        ),
+                    )
+                for image in items:
+                    tokens += image.tokens
+                    pixel_bytes += len(image.pixels)
+                    if len(prepared) >= limit:
+                        raise APIError(
+                            400,
+                            f"requests support at most {limit} images "
+                            "and video frame pairs",
+                        )
+                    self._check_image_request_size(
+                        tokens,
+                        len(prepared) + 1,
+                        pixel_bytes,
+                        check_context=check_context,
+                        image_tokens_only=True,
+                    )
+                    prepared.append(image)
             except image_input.ImageCapacityError as error:
                 raise APIError(503, str(error), "frontend_overloaded") from error
             except image_input.ImageError as error:
@@ -416,7 +454,7 @@ class Frontend:
         if frame_bytes > wire.MAX_FRAME_PAYLOAD_BYTES:
             raise APIError(400, "images exceed the request size limit")
 
-    def _render_image_tokens(self, messages, template):
+    def _render_image_tokens(self, messages, template, videos=()):
         """Track placeholders emitted by the template, not quoted in input text.
 
         A temporary render marker is removed before tokenization, so the pinned
@@ -428,8 +466,20 @@ class Frontend:
         source = template["chat_template"]
         for site in self.chat_format.image_sites:
             source = source.replace(site, site.replace(pad, IMAGE_RENDER_MARKER))
+        video_pad = self.chat_format.video_pad
+        for site in self.chat_format.video_sites:
+            source = source.replace(site, site.replace(video_pad, VIDEO_RENDER_MARKER))
         rendered = self._apply_chat_template(
             messages, {**template, "tokenize": False, "chat_template": source}
+        )
+        # Each video's tubelets, one labeled placeholder each, as the
+        # processor widens the template's <video>.
+        pieces = rendered.split(VIDEO_RENDER_MARKER)
+        if len(pieces) != len(videos) + 1:
+            raise APIError(400, "video count does not match the rendered template")
+        rendered = pieces[0] + "".join(
+            "\n".join(label + IMAGE_RENDER_MARKER for label in labels) + piece
+            for labels, piece in zip(videos, pieces[1:])
         )
         parts = rendered.split(IMAGE_RENDER_MARKER)
         image_offsets = set()
@@ -493,6 +543,7 @@ class Frontend:
                     image.grid_width,
                     image.digest_lo,
                     image.digest_hi,
+                    image.frames,
                 )
             )
             expanded.extend([pad_id] * image.tokens)
@@ -977,7 +1028,7 @@ class Frontend:
         try:
             if images:
                 tokens, positions, rendered = self._render_image_tokens(
-                    prompt.messages, template
+                    prompt.messages, template, images.videos
                 )
             else:
                 rendered = self._apply_chat_template(prompt.messages, template)

@@ -94,7 +94,14 @@ def _user_content(content, document_budget, vision):
         elif kind == "file":
             _require_vision("PDF", vision)
             parts.extend(file_content(part.get("file"), budget=document_budget))
-        elif kind in ("video", "video_url", "input_audio"):
+        elif kind in ("video_url", "input_video"):
+            _require_vision("video", vision)
+            video_url = part.get("video_url")
+            url = video_url.get("url") if isinstance(video_url, dict) else video_url
+            if not isinstance(url, str):
+                raise APIError(400, "invalid video content part")
+            parts.append({"type": "video_url", "video_url": {"url": url}})
+        elif kind in ("video", "input_audio"):
             raise APIError(400, f"{kind} content is not supported")
         else:
             raise APIError(400, "unsupported message content part")

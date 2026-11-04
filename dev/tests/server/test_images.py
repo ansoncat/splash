@@ -465,6 +465,7 @@ class ImageRequestTest(HarnessTestCase):
                 digest_lo=i,
                 digest_hi=0,
                 pixels=bytes([i]),
+                frames=1,
             )
             for i in (1, 2)
         ]
@@ -539,6 +540,7 @@ class ImageRequestTest(HarnessTestCase):
                 digest_lo=i,
                 digest_hi=0,
                 pixels=bytes([i]),
+                frames=1,
             )
             for i in (1, 2, 3)
         ]
@@ -559,6 +561,91 @@ class ImageRequestTest(HarnessTestCase):
         tokens, positions, _ = app._render_image_tokens(quoting, template)
         with self.assertRaisesRegex(api.APIError, "image count"):
             app._expand_image_pads(tokens, prepared[:1], positions)
+
+    def test_nemotron_videos_widen_to_labeled_tubelets(self):
+        """As Nemotron Omni's processor widens <video>: each tubelet's label,
+        then its run, the runs a line apart; spans carry both frames."""
+        from tokenizers import pre_tokenizers
+        from transformers import PreTrainedTokenizerFast
+
+        backend = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
+        backend.pre_tokenizer = pre_tokenizers.WhitespaceSplit()
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=backend,
+            additional_special_tokens=[
+                "<|im_start|>",
+                "<|im_end|>",
+                NEMOTRON.image_pad,
+                NEMOTRON.image_open,
+                NEMOTRON.image_close,
+            ],
+        )
+        fixtures_dir = Path(__file__).resolve().parents[1] / "fixtures"
+        template = {
+            "tokenize": False,
+            "return_dict": False,
+            "chat_template": (fixtures_dir / "chat_templates/bolt.jinja").read_text(),
+        }
+        app = object.__new__(request_frontend.Frontend)
+        app.tokenizer = tokenizer
+        app.chat_format = NEMOTRON
+        from server.latency import LatencyMetrics
+
+        app.latencies = LatencyMetrics()
+        app.max_context = 4096
+        video = {"type": "video_url", "video_url": {"url": "unused"}}
+        image = {"type": "image_url", "image_url": {"url": "unused"}}
+        messages = [
+            {
+                "role": "user",
+                "content": [video, image, {"type": "text", "text": "What changed?"}],
+            }
+        ]
+        labels = images._frame_labels([0, 30, 60], 30.0)
+        self.assertEqual(
+            labels,
+            (
+                "Frame 1 sampled at 0.00 seconds and frame 2 sampled at 0.99 seconds: ",
+                "Frame 3 sampled at 1.98 seconds: ",
+            ),
+        )
+        tokens, positions, rendered = app._render_image_tokens(
+            messages, template, [labels]
+        )
+        self.assertIn(
+            f"{labels[0]}<image>\n{labels[1]}<image><image>What changed?", rendered
+        )
+        tubelet = SimpleNamespace(
+            tokens=4, grid_height=4, grid_width=4, digest_lo=1, digest_hi=0,
+            pixels=bytes(2), frames=2,
+        )
+        picture = SimpleNamespace(
+            tokens=4, grid_height=4, grid_width=4, digest_lo=2, digest_hi=0,
+            pixels=bytes(1), frames=1,
+        )
+        expanded, spans, _ = app._expand_image_pads(
+            tokens, [tubelet, tubelet, picture], positions
+        )
+        self.assertEqual([span.frames for span in spans], [2, 2, 1])
+        self.assertEqual(
+            tokenizer.decode(expanded).count(f"{NEMOTRON.image_open}"), 3
+        )
+        with self.assertRaisesRegex(api.APIError, "video count"):
+            app._render_image_tokens(messages, template, [])
+
+    def test_video_frames_resize_as_the_processor_does(self):
+        # _compute_target_patches_video: 1024 patches, sides even.
+        for (height, width), patches in {
+            (1080, 1920): (24, 42),
+            (512, 512): (32, 32),
+            (1920, 1080): (42, 24),
+            (480, 640): (28, 36),
+            (100, 4000): (4, 202),
+        }.items():
+            self.assertEqual(
+                images.video_resize(height, width),
+                (patches[0] * 16, patches[1] * 16),
+            )
 
     def test_image_render_marker_is_stable_across_requests(self):
         app = self.harness(FakeRuntime(), tokenizer=ImagePadTokenizer()).app

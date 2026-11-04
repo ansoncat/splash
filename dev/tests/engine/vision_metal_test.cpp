@@ -48,6 +48,7 @@ void run(metal::MetalBackend &backend, const ops::VisionLayout &layout, bool rad
   VisionWeights model;
   model.layout = layout;
   model.patchEmbedding = radio ? unbiased(hidden, layout.patchDimension) : affine(hidden, layout.patchDimension);
+  if (radio) model.videoPatchEmbedding = unbiased(hidden, 2 * layout.patchDimension);
   model.positionTable = tensor(positions);
   model.blocks.assign(layout.depth, VisionBlock{norm, affine(3 * hidden, hidden), affine(hidden, hidden), norm,
                                                 affine(layout.paddedIntermediateSize, hidden),

@@ -79,6 +79,8 @@ struct VisionWeights final {
   std::vector<VisionBlock> blocks;
   VisionNorm mergerNorm;
   VisionNorm finalNorm = {}; // RADIO's, when its layout has one
+  // RADIO's video patch embedding, two frames of patches wide (no bias).
+  VisionAffine videoPatchEmbedding = {};
   VisionAffine mergerUpProjection;
   VisionAffine mergerDownProjection;
   metal::MetalBuffer prefixTokens = {};
@@ -95,13 +97,15 @@ inline constexpr uint32_t kMaximumImagePatches = 16384;
          kImagePatchPixels * kImageChannels;
 }
 // Patch-grid sides are multiples of the 2x2 spatial merge. Each merged token
-// covers four patches and follows row-major order over the merged grid.
+// covers four patches and follows row-major order over the merged grid. A
+// video's tubelet is two frames of one grid, encoded into one grid's tokens.
 struct ImageGrid final {
   uint32_t height = 0; // patches
   uint32_t width = 0;
+  uint32_t frames = 1;
 
   [[nodiscard]] bool valid() const noexcept {
-    return height >= 2 && width >= 2 && height % 2 == 0 && width % 2 == 0;
+    return height >= 2 && width >= 2 && height % 2 == 0 && width % 2 == 0 && (frames == 1 || frames == 2);
   }
   // Exact for any sides, so a grid past a patch limit cannot wrap under it.
   [[nodiscard]] uint64_t patches() const noexcept {
@@ -111,7 +115,7 @@ struct ImageGrid final {
     return (height / 2) * (width / 2);
   }
   [[nodiscard]] uint64_t pixelBytes() const noexcept {
-    return imagePixelBytes(height, width);
+    return imagePixelBytes(height, width) * frames;
   }
 };
 
