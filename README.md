@@ -23,8 +23,21 @@
 >     `nemotron` is this branch plus this README.
 >
 > The desktop app and Homebrew formula below are upstream's and don't include
-> these changes. Build this branch from source instead
-> ([Build and run](docs/server.md#build-and-run)).
+> these changes. Build this branch from source instead. It needs macOS 26.4 or
+> later, Xcode 26 or newer with its Metal Toolchain, and Python 3.12–3.14
+> ([build requirements](docs/README.md)):
+>
+> ```bash
+> git clone -b nemotron https://github.com/ansoncat/splash-nemotron.git
+> cd splash-nemotron
+> make -j4
+> ./splash serve --model nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
+> ```
+>
+> The first serve sets up Python dependencies and downloads the model and its
+> draft. Run `./splash` from this checkout wherever upstream's docs say `splash`.
+> If `make` reports a missing Metal Toolchain, install it with
+> `xcodebuild -downloadComponent MetalToolchain`.
 
 Splash runs coding agents and OpenAI or Anthropic compatible applications on
 one Mac. It combines [DFlash 2](https://inco.ai/blog/dflash2/) speculative
@@ -137,16 +150,22 @@ it once into a BF16 DFlash2 checkpoint.
 ./splash serve --model nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
 ```
 
-Super has no automatic draft. Download the target, the LiLiCorr draft from
-`ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF` and an mmproj, install
-them from local files, and serve the root it prints:
+Super has no automatic draft. Download the target, ggml-org's LiLiCorr draft
+and unsloth's mmproj with the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli)
+(about 54 GB), then serve them as local files:
 
 ```bash
-.venv/bin/python -m install.local /models/Super/UD-IQ2_XXS/<first shard>.gguf \
-  --draft-model /models/Super/ggml-org/LiLiCorr --mmproj /models/Super/mmproj-BF16.gguf \
-  --models /models/splash
-./splash serve --model local/Super --model-dir <printed root>
+hf download unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF \
+  --include 'UD-IQ2_XXS/*' --include mmproj-BF16.gguf --local-dir ~/models/super
+hf download ggml-org/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF \
+  lilicorr-NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4.gguf --local-dir ~/models/super/lilicorr
+./splash serve --model local/Super \
+  --model-dir ~/models/super/UD-IQ2_XXS/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-UD-IQ2_XXS-00001-of-00003.gguf \
+  --draft-model ~/models/super/lilicorr --mmproj ~/models/super/mmproj-BF16.gguf
 ```
+
+The first serve prepares these files, converting the draft once; later starts
+reuse it.
 
 - When the experts don't fit, `--expert-memory auto` streams the routed experts
   from the SSD, as for the other MoE families.
