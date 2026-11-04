@@ -260,6 +260,26 @@ def parse_queue_size(value):
     return size
 
 
+def parse_video_fps(value):
+    try:
+        fps = float(value)
+    except ValueError:
+        fps = 0.0
+    if not 0 < fps <= 30:
+        raise argparse.ArgumentTypeError("must be a frame rate above 0 and at most 30")
+    return fps
+
+
+def parse_video_max_frames(value):
+    try:
+        frames = int(value)
+    except ValueError:
+        frames = 0
+    if not 1 <= frames <= 256:
+        raise argparse.ArgumentTypeError("must be between 1 and 256 frames")
+    return frames
+
+
 def parse_decode_share(value):
     try:
         share = float(value)
@@ -656,6 +676,28 @@ SERVE_OPTIONS = (
             help=f"maximum resized pixels per image, {images.MIN_PIXELS}–"
             f"{images.MAX_PIXELS} (default: {images.MAX_PIXELS}); bounds the "
             "vision scratch one image needs",
+        ),
+    ),
+    ServeOption(
+        "--video-fps",
+        "requests",
+        dict(
+            type=parse_video_fps,
+            default=images.VIDEO_FPS,
+            metavar="FPS",
+            help="frames sampled per second of a video, for models that take "
+            f"video (default: {images.VIDEO_FPS:g})",
+        ),
+    ),
+    ServeOption(
+        "--video-max-frames",
+        "requests",
+        dict(
+            type=parse_video_max_frames,
+            default=images.VIDEO_MAX_FRAMES,
+            metavar="FRAMES",
+            help="most frames sampled from a video, spread over all of it "
+            f"(default: {images.VIDEO_MAX_FRAMES})",
         ),
     ),
     ServeOption(

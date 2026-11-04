@@ -799,6 +799,8 @@ def main_args(**overrides):
             "disable_ane": False,
             "verify_rows": "auto",
             "max_image_pixels": images.MAX_PIXELS,
+            "video_fps": images.VIDEO_FPS,
+            "video_max_frames": images.VIDEO_MAX_FRAMES,
             "request_timeout": None,
             "queue_size": 1,
             "host": "127.0.0.1",

@@ -160,7 +160,8 @@ struct ModelRequest final {
 // merged 2x2 patch group, row-major over the merged grid), the patch grid of
 // the frontend's resized pixels, and a 128-bit digest of that content.
 // Placeholder token ids are identical for every image, so cache identity keys
-// on the digest as well as the tokens.
+// on the digest as well as the tokens. A video's tubelet is a span of two
+// frames: its pixels hold both, one after the other, and its tokens one grid's.
 struct ImageSpan final {
   uint32_t offset = 0;
   uint32_t tokens = 0;
@@ -168,10 +169,11 @@ struct ImageSpan final {
   uint32_t gridWidth = 0;
   uint64_t digestLo = 0;
   uint64_t digestHi = 0;
+  uint32_t frames = 1;
 
   [[nodiscard]] uint32_t end() const noexcept { return offset + tokens; }
   [[nodiscard]] ops::ImageGrid grid() const noexcept {
-    return {gridHeight, gridWidth};
+    return {gridHeight, gridWidth, frames};
   }
   [[nodiscard]] uint64_t pixelBytes() const noexcept {
     return grid().pixelBytes();

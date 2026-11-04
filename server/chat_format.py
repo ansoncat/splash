@@ -138,6 +138,12 @@ class ChatFormat:
     image_sites: tuple[str, ...] = ("<|image_pad|>",)
     # How its processor resizes an image (images.RESIZE_RULES).
     image_resize: str = "qwen"
+    # The token the template writes for a video, which the server widens to
+    # its tubelets as the processor labels them (images.prepare_video), and
+    # where the template's source writes it; none where the family takes no
+    # video.
+    video_pad: str = ""
+    video_sites: tuple[str, ...] = ()
 
     @property
     def stop_ids(self):
@@ -197,7 +203,8 @@ FLINT = ChatFormat(
 # ChatML template that opens the think block by enable_thinking and lays a
 # call out as Qwen's do. Its template writes <image> for an image, which its
 # processor (processing.py) widens between <img> and </img>; the template
-# also tests a message's text for <image>.
+# also tests a message's text for <image>. It writes <video> for a video,
+# which the processor widens to one labeled <img> run per two frames.
 NEMOTRON = ChatFormat(
     vocabulary=131072,
     stop_tokens=(("</s>", 2), ("<|im_end|>", 11)),
@@ -211,4 +218,6 @@ NEMOTRON = ChatFormat(
     image_close="</img>",
     image_sites=("+ '<image>'", "'><image>'"),
     image_resize="nemotron",
+    video_pad="<video>",
+    video_sites=("+ '<video>'",),
 )

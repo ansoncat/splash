@@ -81,8 +81,11 @@ kernel void vision_patchify(
     }
 }
 
-// RADIO's patchify: one frame, per-patch feature order (channel, row, col),
-// each channel normalized by its CLIP mean and std.
+// RADIO's patchify: `frames` frames, one after the other in pixels, into
+// rows of per-patch feature order (frame, channel, row, col), each channel
+// normalized by its CLIP mean and std. An image is one frame; a video's
+// tubelet two, the order of its video patch embedding (v.patch_embd.weight.1).
+template <uint frames>
 kernel void vision_patchify_radio(
     device const uchar *pixels [[buffer(0)]],
     device bfloat *patches [[buffer(1)]],
@@ -92,18 +95,26 @@ kernel void vision_patchify_radio(
 {
     uint2 position = vision_patch_position(token, params.grid_width);
     uint image_width = params.grid_width * kVisionPatch;
-    device bfloat *row = patches + ulong(token) * kRadioPatchDim;
-    for (uint feature = thread_index; feature < kRadioPatchDim;
+    ulong frame_bytes = ulong(params.grid_height) * kVisionPatch * image_width * 3;
+    device bfloat *row = patches + ulong(token) * (frames * kRadioPatchDim);
+    for (uint feature = thread_index; feature < frames * kRadioPatchDim;
          feature += 256) {
-        uint channel = feature / (kVisionPatch * kVisionPatch);
+        uint frame = feature / kRadioPatchDim;
+        uint channel = feature % kRadioPatchDim / (kVisionPatch * kVisionPatch);
         uint within = feature % (kVisionPatch * kVisionPatch);
-        ulong pixel = (ulong(position.x * kVisionPatch + within / kVisionPatch) *
+        ulong pixel = frame * frame_bytes +
+                      (ulong(position.x * kVisionPatch + within / kVisionPatch) *
                            image_width +
                        position.y * kVisionPatch + within % kVisionPatch) * 3 + channel;
         row[feature] = bfloat((float(pixels[pixel]) * (1.0f / 255.0f) -
                                kRadioMean[channel]) / kRadioStd[channel]);
     }
 }
+
+template [[host_name("vision_patchify_radio")]] kernel void
+vision_patchify_radio<1>(device const uchar *, device bfloat *, constant VisionGridParams &, uint, uint);
+template [[host_name("vision_patchify_radio_video")]] kernel void
+vision_patchify_radio<2>(device const uchar *, device bfloat *, constant VisionGridParams &, uint, uint);
 
 // Grid-derived inputs: the bilinear (align-corners) resample of the learned
 // 48x48 position table into the fp32 residual rows the patch embedding adds

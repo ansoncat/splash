@@ -47,6 +47,12 @@ BlockIdentity blockImageIdentity(uint64_t blockBegin, uint32_t blockTokens,
       lo = mix(lo, value);
       hi = mix(hi, ~value);
     }
+    // A video's tubelet also folds its frames; an image's identity is as
+    // before tubelets existed.
+    if (span.frames != 1) {
+      lo = mix(lo, span.frames);
+      hi = mix(hi, ~uint64_t{span.frames});
+    }
     identity = {lo, hi};
   }
   return identity;

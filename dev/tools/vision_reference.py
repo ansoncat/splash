@@ -21,13 +21,15 @@ tokens without positions, 32 pre-norm blocks of erf-GELU MLPs and separate
 q, k and v, then the prefix dropped, each 2x2 block of patches shuffled into
 one row, an RMS norm and a ReLU-squared MLP without biases.
 
-    python dev/tools/vision_reference.py MODEL_ROOT OUT_DIR
+    python dev/tools/vision_reference.py MODEL_ROOT OUT_DIR [--frames 2]
 
 writes a small deterministic parity fixture (pixels, grid, fp32 embeddings)
 consumed by ``dev/tests/engine/vision_encoder_test.mm``. The fixtures in
 ``dev/tests/fixtures/vision-parity/`` are the default 96x128 image, but the
 35B's, which is ``--height 192 --width 192``, and Bolt's, ``--width 160``:
-its 60 patches and 10 prefix tokens cross a 64-row tile.
+its 60 patches and 10 prefix tokens cross a 64-row tile. ``--frames 2`` writes a
+RADIO video tubelet's instead (``nemotron-3.5-bolt-video``): two frames, the
+second the first shifted and dimmed, through the video patch embedding.
 """
 
 import argparse
@@ -389,6 +391,7 @@ def radio_names(depth: int):
     reads, as VisionLoader binds a nemotron_omni projector (the second patch
     embedding, ``v.patch_embd.weight.1``, is the video path's)."""
     yield "patch_embed.weight", "v.patch_embd.weight"
+    yield "video_patch_embed.weight", "v.patch_embd.weight.1"
     yield "pos_embed", "v.position_embd.weight"
     yield "prefix", "v.class_embd"
     for block in range(depth):
@@ -423,9 +426,8 @@ def load_radio(mmproj: Path) -> tuple[dict, dict]:
     names = dict(radio_names(config["depth"]))
     found = read_gguf_tensors(mmproj, list(names.values()), "nemotron_omni")
     weights = {reference: found[name] for reference, name in names.items()}
-    weights["patch_embed.weight"] = weights["patch_embed.weight"].reshape(
-        weights["patch_embed.weight"].shape[0], -1
-    )
+    for name in ("patch_embed.weight", "video_patch_embed.weight"):
+        weights[name] = weights[name].reshape(weights[name].shape[0], -1)
     return config, weights
 
 
@@ -447,20 +449,25 @@ def half_pixel_resize(table: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
 
 def encode_radio(config: dict, weights: dict, pixels: np.ndarray) -> np.ndarray:
     """Returns (patches / 4, out_hidden) fp32 embeddings in raster order of
-    the merged grid."""
-    height, width, _ = pixels.shape
+    the merged grid. Pixels (frames, height, width, 3) of two frames are a
+    video tubelet: each patch row is both frames' [channel, patch-row,
+    patch-col], frame-major, through the video patch embedding."""
+    if pixels.ndim == 3:
+        pixels = pixels[None]
+    frames, height, width, _ = pixels.shape
     if height % (PATCH * MERGE) or width % (PATCH * MERGE):
         raise ValueError("image must have sides divisible by 32")
     grid_h, grid_w = height // PATCH, width // PATCH
     normalized = (pixels.astype(np.float32) / 255.0 - config["mean"]) / config["std"]
-    # (row, col) patches of [channel, patch-row, patch-col].
-    patches = normalized.reshape(grid_h, PATCH, grid_w, PATCH, 3)
-    patches = patches.transpose(0, 2, 4, 1, 3).reshape(grid_h * grid_w, -1)
+    # (row, col) patches of [frame, channel, patch-row, patch-col].
+    patches = normalized.reshape(frames, grid_h, PATCH, grid_w, PATCH, 3)
+    patches = patches.transpose(1, 3, 0, 5, 2, 4).reshape(grid_h * grid_w, -1)
+    embedding = weights["video_patch_embed.weight" if frames == 2 else "patch_embed.weight"]
     side = int(round(weights["pos_embed"].shape[0] ** 0.5))
     table = weights["pos_embed"].reshape(side, side, -1)
     longer = max(grid_h, grid_w)
     positions = half_pixel_resize(table, longer, longer)[:grid_h, :grid_w]
-    x = patches @ weights["patch_embed.weight"].T
+    x = patches @ embedding.T
     x = np.concatenate([weights["prefix"], x + positions.reshape(x.shape)])
     tokens, hidden = x.shape
     heads = config["heads"]
@@ -499,23 +506,31 @@ def encode_radio(config: dict, weights: dict, pixels: np.ndarray) -> np.ndarray:
     return (np.maximum(merged, 0.0) ** 2) @ weights["merger.fc2.weight"].T
 
 
-def write_fixture(root: Path, out: Path, height: int = 96, width: int = 128) -> None:
+def write_fixture(
+    root: Path, out: Path, height: int = 96, width: int = 128, frames: int = 1
+) -> None:
     pixels = fixture_image(height, width)
     mmproj = root / "vision" / "mmproj.gguf"
-    if mmproj.exists() and projector_type(mmproj) == "nemotron_omni":
+    radio = mmproj.exists() and projector_type(mmproj) == "nemotron_omni"
+    if frames == 2:
+        if not radio:
+            raise ValueError("only RADIO encodes video tubelets")
+        second = (np.roll(pixels, 5, axis=1).astype(np.float32) * 0.8).astype(np.uint8)
+        pixels = np.stack([pixels, second])
+    if radio:
         expected = encode_radio(*load_radio(mmproj), pixels).astype(np.float32)
     else:
         layout, weights = load_model(root)
         expected = encode(layout, weights, pixels).astype(np.float32)
     out.mkdir(parents=True, exist_ok=True)
     (out / "grid.txt").write_text(
-        f"{pixels.shape[0] // PATCH} {pixels.shape[1] // PATCH}\n"
+        f"{height // PATCH} {width // PATCH}" + (f" {frames}" if frames != 1 else "") + "\n"
     )
     (out / "pixels.bin").write_bytes(pixels.tobytes())
     (out / "expected_fp32.bin").write_bytes(expected.tobytes())
     print(
-        f"wrote parity fixture for grid {pixels.shape[0] // PATCH}x"
-        f"{pixels.shape[1] // PATCH}: {expected.shape} embeddings"
+        f"wrote parity fixture for grid {height // PATCH}x{width // PATCH}"
+        f" of {frames} frame(s): {expected.shape} embeddings"
     )
 
 
@@ -525,5 +540,6 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--height", type=int, default=96)
     parser.add_argument("--width", type=int, default=128)
+    parser.add_argument("--frames", type=int, choices=(1, 2), default=1)
     args = parser.parse_args()
-    write_fixture(args.model, args.output, args.height, args.width)
+    write_fixture(args.model, args.output, args.height, args.width, args.frames)
