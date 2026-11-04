@@ -172,6 +172,11 @@ reuse it.
 - Super's official NVFP4 GGUF loads too: its routed down projection has
   2,688-wide rows, which load as NVFP4G64
   ([formats](docs/models.md#gguf-targets)).
+- Both models take video: a `video_url` or `input_video` part with a base64 MP4
+  or QuickTime data URL. Splash samples 1 frame per second, up to 128 frames
+  (`--video-fps`, `--video-max-frames`), and lays the frames out as NVIDIA's
+  processor does, two to a temporal patch, each pair labelled with its
+  timestamps. Prompt token counts match the processor's.
 
 Limits outside this fork:
 
@@ -184,9 +189,11 @@ Not done yet:
 
 - The Mamba-2 state is fp32 only; `--state-format bf16` is refused. A BF16 state
   needs its own kernels and a check of its error over long conversations.
-- Vision takes still images only. Both models also take video (mp4 frames,
-  two to a temporal patch), but Splash's API refuses video for every model, and
-  the video path isn't ported. Neither model has an audio encoder.
+- Video keeps every token: NVIDIA's processor prunes 70% of them by default
+  (EVS), which isn't ported, so a 2-minute video at 1 FPS costs about 16.8K
+  tokens instead of 6.2K. Frames are decoded in software (the hardware decoder
+  stalls while Super holds most of memory), the track's rotation is ignored,
+  and WebM is refused. Neither model has an audio encoder.
 - The kernels cover these two models' shapes only, as for every family; other
   Nemotron-H geometries are refused until they get their own variants.
 - Super's draft states its own window of 8,192 tokens; it sees the engine's
