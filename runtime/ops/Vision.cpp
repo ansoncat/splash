@@ -334,4 +334,32 @@ void Vision::encode(CommandGraph &graph, ImageGrid grid,
           kMergerRowTile, kMergerColumnTile);
 }
 
+uint64_t VideoPruning::flagBytes(const VideoPruningShape &shape) noexcept {
+  return uint64_t{shape.tubelets} * shape.grid.mergedTokens() * kFloatBytes;
+}
+
+void VideoPruning::add(CommandGraph &graph, const VideoPruningShape &shape, const MetalBuffer &encoded,
+                       const MetalBuffer &text, const MetalBuffer &cuts, const MetalBuffer &dissimilarity,
+                       const MetalBuffer &keep, const MetalBuffer &output) {
+  const uint32_t rows = shape.grid.mergedTokens();
+  const uint64_t total = uint64_t{shape.tubelets} * rows;
+  if (!shape.tubelets || shape.grid.frames != 2 || !shape.width || !shape.textTokens || shape.kept < rows ||
+      shape.kept > total)
+    throw std::invalid_argument("invalid video pruning");
+  const uint32_t stride = Vision::embeddingRows(shape.grid);
+  requireBytes(encoded, uint64_t{shape.tubelets} * stride * shape.width * kBf16Bytes, "video tubelet rows");
+  requireBytes(text, uint64_t{shape.textTokens} * shape.width * kBf16Bytes, "video text rows");
+  requireBytes(cuts, uint64_t{shape.tubelets} * sizeof(uint32_t), "video text cuts");
+  requireBytes(dissimilarity, flagBytes(shape), "video dissimilarity");
+  requireBytes(keep, flagBytes(shape), "video keep flag");
+  requireBytes(output, (uint64_t{shape.textTokens} + shape.kept) * shape.width * kBf16Bytes, "video rows");
+  const VideoPruningParams params{shape.tubelets, rows, stride, shape.width, shape.kept, shape.textTokens};
+  const auto groups = static_cast<uint32_t>(total);
+  graph.add("video_pruning_dissimilarity", {encoded, dissimilarity}, params, {groups, 1, 1});
+  graph.add("video_pruning_keep", {dissimilarity, keep}, params,
+            {(groups + CommandGraph::kDefaultThreads - 1) / CommandGraph::kDefaultThreads, 1, 1});
+  graph.add("video_pruning_place", {encoded, text, cuts, keep, output}, params,
+            {groups + shape.textTokens, 1, 1});
+}
+
 } // namespace splash::ops

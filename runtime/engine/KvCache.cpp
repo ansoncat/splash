@@ -53,6 +53,12 @@ BlockIdentity blockImageIdentity(uint64_t blockBegin, uint32_t blockTokens,
       lo = mix(lo, span.frames);
       hi = mix(hi, ~uint64_t{span.frames});
     }
+    // A pruned video also folds its layout.
+    if (span.pruned()) {
+      const uint64_t layout = (uint64_t{span.tubelets} << 32) | span.textTokens;
+      lo = mix(lo, layout);
+      hi = mix(hi, ~layout);
+    }
     identity = {lo, hi};
   }
   return identity;

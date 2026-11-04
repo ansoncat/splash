@@ -3,9 +3,10 @@
 import hashlib
 import json
 import secrets
+import struct
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from pathlib import Path
 
@@ -254,6 +255,7 @@ class Frontend:
         video_decoder=None,
         video_fps=image_input.VIDEO_FPS,
         video_max_frames=image_input.VIDEO_MAX_FRAMES,
+        video_pruning=image_input.VIDEO_PRUNING,
         served_model_names=(),
         announce_served_name=False,
         default_reasoning_effort=None,
@@ -307,6 +309,7 @@ class Frontend:
         self.video_decoder = video_decoder if chat_format.video_pad else None
         self.video_fps = video_fps
         self.video_max_frames = video_max_frames
+        self.video_pruning = video_pruning
         self.images = image_input.ImageCache()
         self.ids = count(1)
         self.preparation_capacity = preparation_capacity
@@ -366,7 +369,8 @@ class Frontend:
     def _prepare_images(self, messages, deadline, *, check_context=True):
         """Prepared images in template render order: content parts in message
         order, images in document order, each video's tubelets in its place.
-        `videos` holds each video's tubelet labels, in order."""
+        `videos` holds each video's tubelet labels, in order, and
+        `video_ranges` each video's first tubelet and tubelet count."""
         parts = [
             part
             for message in messages
@@ -379,6 +383,7 @@ class Frontend:
             raise APIError(400, f"requests support at most {limit} images")
         prepared = self.images.request_batch()
         prepared.videos = []
+        prepared.video_ranges = []
         tokens = pixel_bytes = 0
         for part in parts:
             # An image can take a few hundred milliseconds to decode; an
@@ -400,6 +405,7 @@ class Frontend:
                     )
                     items = video.tubelets
                     prepared.videos.append(video.labels)
+                    prepared.video_ranges.append((len(prepared), len(items)))
                 else:
                     payload = image_input.decode_data_url(part["image_url"]["url"])
                     items = (
@@ -516,7 +522,23 @@ class Frontend:
         ):
             raise APIError(400, "image count does not match the rendered template")
         wrap = sum(map(len, self._image_wrap()))
-        return len(prompt_tokens) + sum(image.tokens - 1 + wrap for image in prepared)
+        pruned = sum(
+            count * prepared[start].tokens - self._kept_rows(prepared, start, count)
+            for start, count in getattr(prepared, "video_ranges", ())
+        )
+        return (
+            len(prompt_tokens)
+            + sum(image.tokens - 1 + wrap for image in prepared)
+            - pruned
+        )
+
+    def _kept_rows(self, prepared, start, count):
+        """The tubelet rows EVS keeps of a video, as compute_retained_tokens_count
+        counts them; all of them for a single tubelet or no pruning."""
+        rows = prepared[start].tokens
+        if not self.video_pruning or count < 2:
+            return count * rows
+        return max(rows, int(count * rows * (1 - self.video_pruning)))
 
     def _expand_image_pads(self, prompt_tokens, prepared, positions):
         """Widens the template's single placeholder per image to the image's
@@ -524,10 +546,12 @@ class Frontend:
         token_count = self._image_token_count(prompt_tokens, prepared, positions)
         # Validate lengths before expanding tokens or copying repeated pixels.
         # HTTP body and image-cache limits do not bound decoded request size.
+        ranges = getattr(prepared, "video_ranges", ())
         self._check_image_request_size(
             token_count,
             len(prepared),
-            sum(len(image.pixels) for image in prepared),
+            sum(len(image.pixels) for image in prepared)
+            + sum(4 * count for _, count in ranges),
         )
         expanded, spans, cursor = [], [], 0
         pad_id = self.tokenizer.convert_tokens_to_ids(self.chat_format.image_pad)
@@ -550,8 +574,62 @@ class Frontend:
             expanded.extend(image_close)
             cursor = position + 1
         expanded.extend(prompt_tokens[cursor:])
-        pixels = b"".join(image.pixels for image in prepared)
-        return expanded, tuple(spans), pixels
+        pixels = [image.pixels for image in prepared]
+        if ranges and self.video_pruning:
+            expanded, spans, pixels = self._prune_videos(
+                expanded, spans, pixels, prepared, ranges, pad_id
+            )
+        return expanded, tuple(spans), b"".join(pixels)
+
+    def _prune_videos(self, expanded, spans, pixels, prepared, ranges, pad_id):
+        """Folds each video's tubelet spans into one pruned span
+        (wire.ImageSpan.text_tokens): the text between its tubelets, then a
+        placeholder per row EVS keeps. The engine lays them out as the
+        processor would once it has chosen the rows."""
+        starts = dict(ranges)
+        tokens, folded, staged = [], [], []
+        cursor = index = 0
+        while index < len(spans):
+            count = starts.get(index, 1)
+            group = spans[index : index + count]
+            first, last = group[0], group[-1]
+            kept = self._kept_rows(prepared, index, count)
+            if kept == count * first.tokens:
+                for span, image_pixels in zip(group, pixels[index : index + count]):
+                    tokens.extend(expanded[cursor : span.offset])
+                    folded.append(replace(span, offset=len(tokens)))
+                    tokens.extend(expanded[span.offset : span.offset + span.tokens])
+                    cursor = span.offset + span.tokens
+                    staged.append(image_pixels)
+                index += count
+                continue
+            tokens.extend(expanded[cursor : first.offset])
+            text, cuts = [], []
+            for previous, span in zip((None, *group), group):
+                if previous is not None:
+                    text.extend(expanded[previous.offset + previous.tokens : span.offset])
+                cuts.append(len(text))
+            digest = hashlib.sha256(
+                b"".join(struct.pack("<QQ", s.digest_lo, s.digest_hi) for s in group)
+                + struct.pack("<II", kept, len(text))
+            ).digest()
+            lo, hi = struct.unpack("<QQ", digest[:16])
+            folded.append(
+                wire.ImageSpan(
+                    len(tokens), len(text) + kept, first.grid_height, first.grid_width,
+                    lo, hi, first.frames, count, len(text),
+                )
+            )
+            tokens.extend(text)
+            tokens.extend([pad_id] * kept)
+            staged.append(
+                b"".join(pixels[index : index + count])
+                + struct.pack(f"<{count}I", *cuts)
+            )
+            cursor = last.offset + last.tokens
+            index += count
+        tokens.extend(expanded[cursor:])
+        return tokens, folded, staged
 
     def request_deadline(self, body, started_at):
         timeout = body.get("timeout")

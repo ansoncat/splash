@@ -135,8 +135,9 @@ validateLimits(const ProtocolLimits &limits);
 //  102 u32 thinkingBudget.tokens, kNoThinkingBudget for none
 //  106 u32 thinking end token count, u32 thinkingBudget.alsoEnds, zero
 //      without a budget
-// then the prompt tokens, the 36-byte image spans (u32 offset, tokens,
-// gridHeight, gridWidth, u64 digestLo, digestHi, u32 frames), the image
+// then the prompt tokens, the 44-byte image spans (u32 offset, tokens,
+// gridHeight, gridWidth, u64 digestLo, digestHi, u32 frames, tubelets,
+// textTokens), the image
 // pixels, the score tokens and the thinking end tokens.
 inline constexpr uint64_t kRequestFixedBytes = 114;
 inline constexpr uint32_t kNoThinkingBudget = 0xFFFFFFFFU;

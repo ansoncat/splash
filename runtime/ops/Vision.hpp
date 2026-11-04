@@ -192,4 +192,28 @@ private:
   metal::MetalBuffer scratch_[static_cast<uint32_t>(Scratch::Count)];
 };
 
+// EVS over a pruned video's tubelets (model::ImageSpan::pruned), from their
+// encoded rows (Vision::encode, Vision::embeddingRows(grid) rows apart) and
+// the bf16 rows of the text between them to the span's rows: the `kept`
+// least redundant tubelet rows in order, each tubelet's after the text that
+// precedes it (`cuts`, a u32 per tubelet), as the processor drops the pruned
+// rows of the prompt it widened.
+struct VideoPruningShape final {
+  uint32_t tubelets = 0;
+  ImageGrid grid;
+  uint32_t width = 0;
+  uint32_t kept = 0;
+  uint32_t textTokens = 0;
+};
+
+class VideoPruning final {
+public:
+  // The f32 dissimilarities and u32 keep flags, one per tubelet row.
+  [[nodiscard]] static uint64_t flagBytes(const VideoPruningShape &shape) noexcept;
+  static void add(metal::CommandGraph &graph, const VideoPruningShape &shape,
+                  const metal::MetalBuffer &encoded, const metal::MetalBuffer &text,
+                  const metal::MetalBuffer &cuts, const metal::MetalBuffer &dissimilarity,
+                  const metal::MetalBuffer &keep, const metal::MetalBuffer &output);
+};
+
 } // namespace splash::ops
