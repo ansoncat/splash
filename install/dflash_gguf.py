@@ -30,9 +30,13 @@ MASK_TOKEN_ID = 990
 VOCABULARY = 131072
 # The engine's draft context ring (ExecutionLimits::draftContextTokens): a
 # draft trained over a wider window (Super's 8192) sees the ring's positions.
-# ponytail: Super's draft also states RMS epsilon 1e-5 and its own output
-# head; it runs with the kernels' 1e-6 and the target's head, which costs
-# acceptance only. Add both if its acceptance falls short of Bolt's.
+# Super's draft also states RMS epsilon 1e-5 and its own output head; it runs
+# with the kernels' 1e-6 and the target's head. Its head is the target's,
+# rounded to NVFP4 (correlation 0.995 over 256 sampled rows), and its norms'
+# mean squares are 8 or more, where the epsilons' rsqrt differs by under 1e-6.
+# ponytail: its window is 8192, and the ring holds 2048, a compile-time size
+# of every draft kernel; acceptance at 33K tokens (0.50) matches short prompts
+# (0.47-0.51), so a wider ring waits for a prompt where acceptance drops.
 RING_WINDOW = 2048
 
 
