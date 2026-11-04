@@ -13,7 +13,14 @@
 >
 > - `nemotron` (this default branch): all of the fork's changes, rebased on upstream.
 > - `main`: tracks upstream unchanged.
-> - Other branches hold changes proposed upstream, such as `nemotron-3.5-bolt` for [incoai/splash#633](https://github.com/incoai/splash/issues/633).
+> - Other branches each stack on the one before, for changes that may be
+>   proposed upstream:
+>   - `nemotron-3.5-bolt`: Bolt with its LiLiCorr draft and RADIO vision, as
+>     proposed in [incoai/splash#633](https://github.com/incoai/splash/issues/633).
+>   - `bolt-streaming`: streams Nemotron-H's routed experts from the SSD.
+>   - `bench-tight-memory`: `backend-benchmark` warm-up under a tight `--max-memory`.
+>   - `super-vl`: Nemotron 3.5 Super VL, and NVFP4G64 for its official NVFP4 GGUF.
+>     `nemotron` is this branch plus this README.
 >
 > The desktop app and Homebrew formula below are upstream's and don't include
 > these changes. Build this branch from source instead
@@ -141,20 +148,32 @@ them from local files, and serve the root it prints:
 ./splash serve --model local/Super --model-dir <printed root>
 ```
 
-- Use ggml-org's Super LiLiCorr, not unsloth's: unsloth's doesn't match the
-  official config (2 KV heads, no window, YaRN).
-- The Mamba-2 state is fp32 only; `--state-format bf16` is refused.
-- Vision takes still images only; no audio or video.
-- The kernels cover these two models' shapes only. Other Nemotron-H geometries
-  are refused.
 - When the experts don't fit, `--expert-memory auto` streams the routed experts
   from the SSD, as for the other MoE families.
 - Super's official NVFP4 GGUF loads too: its routed down projection has
   2,688-wide rows, which load as NVFP4G64
   ([formats](docs/models.md#gguf-targets)).
-- The Super draft runs with three approximations: the window is capped at 2,048,
-  ε is 1e-6, and the draft's own output head isn't used. They lower acceptance
-  only; the output is the target's.
+
+Limits outside this fork:
+
+- Use ggml-org's Super LiLiCorr, not unsloth's: unsloth's doesn't match the
+  official config (2 KV heads, no window, YaRN).
+- Expert streaming was measured on a 64 GB Mac under `--max-memory`, not yet on
+  a 32 GB one.
+
+Not done yet:
+
+- The Mamba-2 state is fp32 only; `--state-format bf16` is refused. A BF16 state
+  needs its own kernels and a check of its error over long conversations.
+- Vision takes still images only. The models' audio tower and video patch
+  embedding aren't ported.
+- The kernels cover these two models' shapes only, as for every family; other
+  Nemotron-H geometries are refused until they get their own variants.
+- The Super draft runs with three approximations: its window is capped at the
+  engine's 2,048-token draft context (Super's is 8,192), ε is the kernels' 1e-6
+  (Super's is 1e-5), and the target's output head stands in for the draft's
+  own. They lower acceptance only, the output is the target's, and acceptance
+  already matches Bolt's.
 
 ## Settings
 
