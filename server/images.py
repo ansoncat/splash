@@ -41,6 +41,9 @@ VIDEO_TUBELET = 2
 # Sampling as vLLM's Nemotron loader does it, at the model card's 1080p limits.
 VIDEO_FPS = 1.0
 VIDEO_MAX_FRAMES = 128
+# EVS: the share of a video's tubelet rows dropped as least changed from the
+# tubelet before (config.json video_pruning_rate, which HF applies).
+VIDEO_PRUNING = 0.7
 MAX_VIDEO_BYTES = 256 * 1024 * 1024
 
 

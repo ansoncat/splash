@@ -208,6 +208,9 @@ OPTIONS = {
     "--video-max-frames": values(
         "--video-max-frames", {"1": 1, "256": 256}, ("0", "257", "1.5", "many")
     ),
+    "--video-pruning": values(
+        "--video-pruning", {"0.7": 0.7, "0.5": 0.5, "0": 0.0}, ("1", "-0.1", "nan", "half")
+    ),
     "--request-timeout": values(
         "--request-timeout",
         {"3600": 3600.0, "0.5": 0.5, "90s": 90.0, "30M": 1800.0, "1.5h": 5400.0},

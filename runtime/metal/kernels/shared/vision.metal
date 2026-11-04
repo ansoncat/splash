@@ -750,3 +750,128 @@ vision_attention_gather<kVisionHidden, kVisionHeadDim>(
 template [[host_name("vision_attention_gather_d80")]] kernel void
 vision_attention_gather<kRadioHidden, kRadioHeadDim>(
     device const bfloat *, device bfloat *, constant VisionQkvParams &, uint, uint);
+
+// EVS (ops::VideoPruning), as the processor's compute_retention_mask runs on
+// bf16 embeddings: each tubelet row's dissimilarity to the same row of the
+// tubelet before, 1 - cosine_similarity, each step rounded to bf16 as torch
+// rounds it (norms, the normalized rows, their products, the sum); 255 for
+// the first tubelet, which it always keeps. One threadgroup per row.
+kernel void video_pruning_dissimilarity(
+    device const bfloat *encoded [[buffer(0)]],
+    device float *dissimilarity [[buffer(1)]],
+    constant VideoPruningParams &p [[buffer(2)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
+{
+    const uint tubelet = group / p.rows, row = group % p.rows;
+    if (tubelet == 0) {
+        if (thread_index == 0) dissimilarity[group] = 255.0f;
+        return;
+    }
+    threadgroup float reductions[2][8];
+    device const bfloat *x = encoded + ulong(tubelet * p.stride + row) * p.width;
+    device const bfloat *y = encoded + ulong((tubelet - 1) * p.stride + row) * p.width;
+    float xx = 0.0f, yy = 0.0f;
+    for (uint column = thread_index; column < p.width; column += 256) {
+        const float a = float(x[column]), b = float(y[column]);
+        xx += a * a;
+        yy += b * b;
+    }
+    xx = simd_sum(xx);
+    yy = simd_sum(yy);
+    if (simd_lane == 0) {
+        reductions[0][simd_group] = xx;
+        reductions[1][simd_group] = yy;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    xx = yy = 0.0f;
+    for (ushort i = 0; i < 8; ++i) {
+        xx += reductions[0][i];
+        yy += reductions[1][i];
+    }
+    const float xNorm = max(float(bfloat(sqrt(xx))), 1e-8f);
+    const float yNorm = max(float(bfloat(sqrt(yy))), 1e-8f);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float dot = 0.0f;
+    for (uint column = thread_index; column < p.width; column += 256)
+        dot += float(bfloat(float(bfloat(float(x[column]) / xNorm)) *
+                            float(bfloat(float(y[column]) / yNorm))));
+    dot = simd_sum(dot);
+    if (simd_lane == 0) reductions[0][simd_group] = dot;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (thread_index == 0) {
+        float total = 0.0f;
+        for (ushort i = 0; i < 8; ++i) total += reductions[0][i];
+        dissimilarity[group] = float(bfloat(1.0f - float(bfloat(total))));
+    }
+}
+
+// Whether EVS keeps each row: its place in the rows sorted by dissimilarity,
+// descending and stable, is among the first `kept`. One thread per row,
+// which counts the rows ahead of it.
+// ponytail: quadratic in the video's rows (32K at the 256-frame cap is ~1G
+// comparisons, milliseconds); a GPU sort if the frame cap grows.
+kernel void video_pruning_keep(
+    device const float *dissimilarity [[buffer(0)]],
+    device uint *keep [[buffer(1)]],
+    constant VideoPruningParams &p [[buffer(2)]],
+    uint index [[thread_position_in_grid]])
+{
+    const uint total = p.tubelets * p.rows;
+    if (index >= total) return;
+    const float value = dissimilarity[index];
+    uint ahead = 0;
+    for (uint other = 0; other < total; ++other) {
+        const float d = dissimilarity[other];
+        ahead += (d > value || (d == value && other < index)) ? 1u : 0u;
+    }
+    keep[index] = ahead < p.kept ? 1u : 0u;
+}
+
+// The span's rows in the processor's order: each kept tubelet row after the
+// text before its tubelet and the kept rows before it; each text row after
+// the kept rows of the tubelets its text follows. One threadgroup per
+// tubelet row, then one per text row.
+kernel void video_pruning_place(
+    device const bfloat *encoded [[buffer(0)]],
+    device const bfloat *text [[buffer(1)]],
+    device const uint *cuts [[buffer(2)]],
+    device const uint *keep [[buffer(3)]],
+    device bfloat *output [[buffer(4)]],
+    constant VideoPruningParams &p [[buffer(5)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint thread_index [[thread_index_in_threadgroup]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]])
+{
+    const uint total = p.tubelets * p.rows;
+    const bool tubeletRow = group < total;
+    if (tubeletRow && !keep[group]) return;
+    // The tubelet rows before this one, or before this text row.
+    uint before = group;
+    uint destination = 0;
+    if (!tubeletRow) {
+        const uint token = group - total;
+        uint preceded = 0;
+        for (uint tubelet = 0; tubelet < p.tubelets; ++tubelet)
+            preceded += cuts[tubelet] <= token ? 1u : 0u;
+        before = preceded * p.rows;
+        destination = token;
+    } else {
+        destination = cuts[group / p.rows];
+    }
+    threadgroup uint reductions[8];
+    uint count = 0;
+    for (uint index = thread_index; index < before; index += 256) count += keep[index];
+    count = simd_sum(count);
+    if (simd_lane == 0) reductions[simd_group] = count;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (ushort i = 0; i < 8; ++i) destination += reductions[i];
+    device const bfloat *source =
+        tubeletRow ? encoded + ulong((group / p.rows) * p.stride + group % p.rows) * p.width
+                   : text + ulong(group - total) * p.width;
+    device bfloat *out = output + ulong(destination) * p.width;
+    for (uint column = thread_index; column < p.width; column += 256) out[column] = source[column];
+}

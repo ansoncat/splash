@@ -633,6 +633,44 @@ class ImageRequestTest(HarnessTestCase):
         with self.assertRaisesRegex(api.APIError, "video count"):
             app._render_image_tokens(messages, template, [])
 
+    def test_pruned_video_folds_into_one_span(self):
+        """EVS folds a video's tubelets into one span: the text between them,
+        then the kept rows; later spans shift and the cuts follow the pixels."""
+        app = object.__new__(request_frontend.Frontend)
+        tubelet = SimpleNamespace(tokens=4)
+        prepared = [tubelet, tubelet, SimpleNamespace(tokens=4)]
+        # label, <img>, 4 pads, </img>, \n, label, <img>, 4 pads, </img>, text, image
+        expanded = [100, 10, 1, *[0] * 4, 2, 11, 12, 1, *[0] * 4, 2, 99, 1, *[0] * 4, 2]
+        spans = [
+            native_wire.ImageSpan(offset, 4, 4, 4, lo, 0, frames)
+            for offset, lo, frames in ((3, 1, 2), (11, 2, 2), (18, 3, 1))
+        ]
+
+        def prune(rate):
+            app.video_pruning = rate
+            return app._prune_videos(
+                expanded, spans, [b"a", b"b", b"c"], prepared, [(0, 2)], 0
+            )
+
+        tokens, folded, pixels = prune(0.5)
+        self.assertEqual(
+            tokens, [100, 10, 1, 2, 11, 12, 1, *[0] * 4, 2, 99, 1, *[0] * 4, 2]
+        )
+        video, picture = folded
+        self.assertEqual(
+            (video.offset, video.tokens, video.frames, video.tubelets, video.text_tokens),
+            (3, 8, 2, 2, 4),
+        )
+        self.assertEqual((picture.offset, picture.tokens, picture.tubelets), (14, 4, 1))
+        self.assertEqual(pixels, [b"ab" + struct.pack("<2I", 0, 4), b"c"])
+        # The first tubelet always stays, and the digest covers the kept count.
+        self.assertEqual(prune(0.75)[1][0].tokens, 4 + 4)
+        lighter = prune(0.2)[1][0]
+        self.assertEqual(lighter.tokens, 4 + 6)
+        self.assertNotEqual(lighter.digest_lo, video.digest_lo)
+        app.video_pruning = 0
+        self.assertEqual(app._kept_rows(prepared, 0, 2), 8)
+
     def test_video_frames_resize_as_the_processor_does(self):
         # _compute_target_patches_video: 1024 patches, sides even.
         for (height, width), patches in {

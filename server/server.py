@@ -1862,6 +1862,7 @@ def main():
             video_decoder=args.binary,
             video_fps=args.video_fps,
             video_max_frames=args.video_max_frames,
+            video_pruning=args.video_pruning,
             thinking_codec=thinking_codec,
             served_model_names=args.served_model_name,
             announce_served_name=args.announce_served_name,

@@ -801,6 +801,7 @@ def main_args(**overrides):
             "max_image_pixels": images.MAX_PIXELS,
             "video_fps": images.VIDEO_FPS,
             "video_max_frames": images.VIDEO_MAX_FRAMES,
+            "video_pruning": images.VIDEO_PRUNING,
             "request_timeout": None,
             "queue_size": 1,
             "host": "127.0.0.1",

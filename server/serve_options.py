@@ -280,6 +280,16 @@ def parse_video_max_frames(value):
     return frames
 
 
+def parse_video_pruning(value):
+    try:
+        rate = float(value)
+    except ValueError:
+        rate = -1.0
+    if not 0 <= rate < 1:
+        raise argparse.ArgumentTypeError("must be at least 0 and below 1")
+    return rate
+
+
 def parse_decode_share(value):
     try:
         share = float(value)
@@ -698,6 +708,17 @@ SERVE_OPTIONS = (
             metavar="FRAMES",
             help="most frames sampled from a video, spread over all of it "
             f"(default: {images.VIDEO_MAX_FRAMES})",
+        ),
+    ),
+    ServeOption(
+        "--video-pruning",
+        "requests",
+        dict(
+            type=parse_video_pruning,
+            default=images.VIDEO_PRUNING,
+            metavar="RATE",
+            help="share of a video's frame tokens dropped as least changed "
+            f"from the frames before (EVS; 0 keeps all; default: {images.VIDEO_PRUNING:g})",
         ),
     ),
     ServeOption(
