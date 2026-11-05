@@ -675,6 +675,17 @@ class ImageRequestTest(HarnessTestCase):
         app.video_pruning = 0
         self.assertEqual(app._kept_rows(prepared, 0, 2), 8)
 
+    def test_a_slow_video_decoder_reports_its_time_limit(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            decoder = Path(directory) / "splash"
+            decoder.write_text("#!/bin/sh\nexec sleep 5\n")
+            os.chmod(decoder, 0o755)
+            with self.assertRaisesRegex(images.ImageError, "longer than 0.5 seconds"):
+                images.prepare_video(b"", str(decoder), 1.0, 128, 0.5)
+
     def test_video_frames_resize_as_the_processor_does(self):
         # _compute_target_patches_video: 1024 patches, sides even.
         for (height, width), patches in {
