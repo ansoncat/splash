@@ -482,9 +482,15 @@ int extractVideoFrames(int argc, char **argv) {
     return CMTimeConvertScale(time, scale, kCMTimeRoundingMethod_RoundHalfAwayFromZero).value;
   };
   std::vector<int64_t> times;
+  // The decoded frames' size, as OpenCV reads it: the track's naturalSize is
+  // the display size from the track header, which can be off by a fraction
+  // (568.9 for 568 coded) or scaled by the pixel aspect ratio.
+  CMVideoDimensions dimensions{0, 0};
   {
     auto [reader, output] = samples();
     while (CMSampleBufferRef sample = [output copyNextSampleBuffer]) {
+      if (CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample); format && !dimensions.width)
+        dimensions = CMVideoFormatDescriptionGetDimensions(format);
       const CMItemCount count = CMSampleBufferGetNumSamples(sample);
       std::vector<CMSampleTimingInfo> timing(static_cast<size_t>(count));
       if (count && CMSampleBufferGetOutputSampleTimingInfoArray(sample, count, timing.data(), nullptr) == noErr)
@@ -500,12 +506,11 @@ int extractVideoFrames(int argc, char **argv) {
   const double sourceFps = video.nominalFrameRate;
   // Each side alone first: the container's size is untrusted and the
   // product could overflow.
-  const CGSize size = video.naturalSize;
-  if (total < 1 || !(sourceFps >= 0.1) || !(size.width >= 1 && size.width <= 16384) ||
-      !(size.height >= 1 && size.height <= 16384))
+  if (total < 1 || !(sourceFps >= 0.1) || !(dimensions.width >= 1 && dimensions.width <= 16384) ||
+      !(dimensions.height >= 1 && dimensions.height <= 16384))
     throw std::runtime_error("the video has no frames, no frame rate or an unsupported size");
-  const long width = std::lround(size.width);
-  const long height = std::lround(size.height);
+  const long width = dimensions.width;
+  const long height = dimensions.height;
   if (width * height > 4096L * 4096L)
     throw std::runtime_error("the video has no frames, no frame rate or an unsupported size");
   // vLLM's VideoBackend: min(cap, frames, floor(duration * fps)) frames at

@@ -686,6 +686,17 @@ class ImageRequestTest(HarnessTestCase):
             with self.assertRaisesRegex(images.ImageError, "longer than 0.5 seconds"):
                 images.prepare_video(b"", str(decoder), 1.0, 128, 0.5)
 
+    def test_video_size_is_the_coded_frames_not_the_track_header(self):
+        """The track header says 128.89 wide (MVBench's scene clips do this);
+        the frames decode 128 wide, as OpenCV reads them."""
+        root = Path(__file__).resolve().parents[3]
+        binary = root / "build/splash"
+        if not binary.exists():
+            self.skipTest("needs build/splash")
+        clip = root / "dev/tests/fixtures/videos/tkhd_wider_than_coded.mp4"
+        video = images.prepare_video(clip.read_bytes(), str(binary), 1.0, 128, 30.0)
+        self.assertEqual(len(video.tubelets), 1)
+
     def test_video_frames_resize_as_the_processor_does(self):
         # _compute_target_patches_video: 1024 patches, sides even.
         for (height, width), patches in {
