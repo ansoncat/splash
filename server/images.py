@@ -276,6 +276,13 @@ def _frame_labels(indices, source_fps):
     return tuple(labels)
 
 
+def _video_timeout(seconds: float) -> ImageError:
+    return ImageError(
+        f"video took longer than {seconds:g} seconds to decode; "
+        "send a shorter or lower-resolution clip"
+    )
+
+
 def prepare_video(
     payload: bytes, decoder: str, fps: float, max_frames: int, seconds: float
 ) -> PreparedVideo:
@@ -296,7 +303,8 @@ def prepare_video(
             stderr=subprocess.DEVNULL,
         )
         # The pipe blocks; a timer ends a decoder that outlives its time.
-        timer = threading.Timer(seconds, process.kill)
+        expired = threading.Event()
+        timer = threading.Timer(seconds, lambda: (expired.set(), process.kill()))
         timer.start()
         try:
             header = json.loads(process.stdout.readline(4096) or b"null")
@@ -323,6 +331,9 @@ def prepare_video(
             if process.wait() != 0:
                 raise ImageError("video could not be decoded")
         except (KeyError, TypeError, ValueError) as error:
+            # A killed decoder's output ends early: say why.
+            if expired.is_set():
+                raise _video_timeout(seconds) from error
             if isinstance(error, ImageError):
                 raise
             raise ImageError("video could not be decoded") from error
@@ -332,8 +343,8 @@ def prepare_video(
                 process.kill()
             process.wait()
             process.stdout.close()
-        if time.monotonic() > deadline:
-            raise ImageError("video decoding exceeded the time limit")
+        if expired.is_set() or time.monotonic() > deadline:
+            raise _video_timeout(seconds)
     if len(frames) % VIDEO_TUBELET:
         frames.append(frames[-1])
     grid_height, grid_width = grid[0] // PATCH, grid[1] // PATCH
