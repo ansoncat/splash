@@ -344,7 +344,7 @@ void VideoPruning::add(CommandGraph &graph, const VideoPruningShape &shape, cons
   const uint32_t rows = shape.grid.mergedTokens();
   const uint64_t total = uint64_t{shape.tubelets} * rows;
   if (!shape.tubelets || shape.grid.frames != 2 || !shape.width || !shape.textTokens || shape.kept < rows ||
-      shape.kept > total)
+      shape.kept > total || total + shape.textTokens > UINT32_MAX)
     throw std::invalid_argument("invalid video pruning");
   const uint32_t stride = Vision::embeddingRows(shape.grid);
   requireBytes(encoded, uint64_t{shape.tubelets} * stride * shape.width * kBf16Bytes, "video tubelet rows");

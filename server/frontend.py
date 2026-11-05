@@ -406,6 +406,10 @@ class Frontend:
                     items = video.tubelets
                     prepared.videos.append(video.labels)
                     prepared.video_ranges.append((len(prepared), len(items)))
+                    # Count the rows EVS keeps, not every tubelet's.
+                    tokens -= sum(item.tokens for item in items) - self._kept_rows(
+                        items, 0, len(items)
+                    )
                 else:
                     payload = image_input.decode_data_url(part["image_url"]["url"])
                     items = (
@@ -609,9 +613,10 @@ class Frontend:
                 if previous is not None:
                     text.extend(expanded[previous.offset + previous.tokens : span.offset])
                 cuts.append(len(text))
+            # The rows hold the text's embeddings in the cuts' places too.
             digest = hashlib.sha256(
                 b"".join(struct.pack("<QQ", s.digest_lo, s.digest_hi) for s in group)
-                + struct.pack("<II", kept, len(text))
+                + struct.pack(f"<II{len(text)}I{count}I", kept, len(text), *text, *cuts)
             ).digest()
             lo, hi = struct.unpack("<QQ", digest[:16])
             folded.append(

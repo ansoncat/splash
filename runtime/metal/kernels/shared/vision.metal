@@ -810,7 +810,8 @@ kernel void video_pruning_dissimilarity(
 
 // Whether EVS keeps each row: its place in the rows sorted by dissimilarity,
 // descending and stable, is among the first `kept`. One thread per row,
-// which counts the rows ahead of it.
+// which counts the rows ahead of it. NaN sorts first, as in torch, so the
+// order stays total and exactly `kept` rows are kept.
 // ponytail: quadratic in the video's rows (32K at the 256-frame cap is ~1G
 // comparisons, milliseconds); a GPU sort if the frame cap grows.
 kernel void video_pruning_keep(
@@ -822,10 +823,13 @@ kernel void video_pruning_keep(
     const uint total = p.tubelets * p.rows;
     if (index >= total) return;
     const float value = dissimilarity[index];
+    const bool unordered = isnan(value);
     uint ahead = 0;
     for (uint other = 0; other < total; ++other) {
         const float d = dissimilarity[other];
-        ahead += (d > value || (d == value && other < index)) ? 1u : 0u;
+        const bool before = isnan(d) ? !unordered || other < index
+                                     : !unordered && (d > value || (d == value && other < index));
+        ahead += before ? 1u : 0u;
     }
     keep[index] = ahead < p.kept ? 1u : 0u;
 }
