@@ -668,6 +668,10 @@ class ImageRequestTest(HarnessTestCase):
         lighter = prune(0.2)[1][0]
         self.assertEqual(lighter.tokens, 4 + 6)
         self.assertNotEqual(lighter.digest_lo, video.digest_lo)
+        # The rows hold the text's embeddings: another label of the same
+        # length, as another timestamp, is another span.
+        expanded[9] = 13
+        self.assertNotEqual(prune(0.5)[1][0].digest_lo, video.digest_lo)
         app.video_pruning = 0
         self.assertEqual(app._kept_rows(prepared, 0, 2), 8)
 
@@ -976,6 +980,24 @@ class ImageRequestTest(HarnessTestCase):
         pad = app.tokenizer.convert_tokens_to_ids(QWEN.image_pad)
         with self.assertRaisesRegex(api.APIError, "context window"):
             app._expand_image_pads([pad], [image], [0])
+
+    def test_video_context_counts_the_rows_pruning_keeps(self):
+        app = self.harness(FakeRuntime(), tokenizer=ImagePadTokenizer()).app
+        # Ten tubelets hold 2.5 contexts; the 30% EVS keeps, 0.75 of one.
+        rows = app.max_context // 4
+        tubelet = SimpleNamespace(tokens=rows, pixels=b"")
+        video = SimpleNamespace(tubelets=[tubelet] * 10, labels=())
+        messages = [{"content": [{"type": "video_url", "video_url": {"url": "x"}}]}]
+        app.video_decoder = "splash"
+        with (
+            mock.patch.object(images, "decode_data_url"),
+            mock.patch.object(app.images, "prepare_video", return_value=video),
+        ):
+            app.video_pruning = 0.7
+            self.assertEqual(len(app._prepare_images(messages, FOREVER)), 10)
+            app.video_pruning = 0
+            with self.assertRaisesRegex(api.APIError, "context"):
+                app._prepare_images(messages, FOREVER)
 
     def test_image_preparation_stops_at_aggregate_budget(self):
         app = self.harness(FakeRuntime()).app

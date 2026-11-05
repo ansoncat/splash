@@ -29,6 +29,7 @@
 #include <limits.h>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -497,19 +498,26 @@ int extractVideoFrames(int argc, char **argv) {
   std::sort(times.begin(), times.end());
   const long total = static_cast<long>(times.size());
   const double sourceFps = video.nominalFrameRate;
-  const long width = std::lround(video.naturalSize.width);
-  const long height = std::lround(video.naturalSize.height);
-  if (total < 1 || !(sourceFps > 0) || width < 1 || height < 1 || width * height > 4096L * 4096L)
+  // Each side alone first: the container's size is untrusted and the
+  // product could overflow.
+  const CGSize size = video.naturalSize;
+  if (total < 1 || !(sourceFps >= 0.1) || !(size.width >= 1 && size.width <= 16384) ||
+      !(size.height >= 1 && size.height <= 16384))
+    throw std::runtime_error("the video has no frames, no frame rate or an unsupported size");
+  const long width = std::lround(size.width);
+  const long height = std::lround(size.height);
+  if (width * height > 4096L * 4096L)
     throw std::runtime_error("the video has no frames, no frame rate or an unsupported size");
   // vLLM's VideoBackend: min(cap, frames, floor(duration * fps)) frames at
   // np.linspace(0, frames - 1, n, dtype=int). The rate is a float's, 30 fps
   // as 30.000002: the floor allows for it, as OpenCV's exact 30/1 would.
-  const long count = std::max(1L, std::min({cap, total,
-      static_cast<long>(std::floor(static_cast<double>(total) / sourceFps * fps + 1e-4))}));
+  // Compared as doubles: an odd rate would overflow a long.
+  const long count = static_cast<long>(std::max(1.0, std::min({static_cast<double>(cap),
+      static_cast<double>(total), std::floor(static_cast<double>(total) / sourceFps * fps + 1e-4)})));
   std::vector<long> indices(count);
   const double step = count > 1 ? static_cast<double>(total - 1) / static_cast<double>(count - 1) : 0;
   for (long i = 0; i < count; ++i)
-    indices[i] = i + 1 == count ? total - 1 : static_cast<long>(static_cast<double>(i) * step);
+    indices[i] = count > 1 && i + 1 == count ? total - 1 : static_cast<long>(static_cast<double>(i) * step);
   std::string header = "{\"width\":" + std::to_string(width) + ",\"height\":" + std::to_string(height) +
       ",\"fps\":" + std::to_string(sourceFps) + ",\"frames\":" + std::to_string(total) + ",\"indices\":[";
   for (long i = 0; i < count; ++i)
@@ -525,6 +533,8 @@ int extractVideoFrames(int argc, char **argv) {
     size_t next = 0;
     long width = 0, height = 0;
     bool failed = false;
+    // The handler may run on a decoder thread while this one reads.
+    std::mutex lock;
   } out;
   for (size_t i = 0; i < indices.size(); ++i)
     out.wanted.emplace(times[static_cast<size_t>(indices[i])], i);
@@ -548,6 +558,7 @@ int extractVideoFrames(int argc, char **argv) {
       VTDecompressionSessionDecodeFrameWithOutputHandler(
           session, sample, 0, nullptr,
           ^(OSStatus status, VTDecodeInfoFlags, CVImageBufferRef image, CMTime time, CMTime) {
+            const std::lock_guard guard(state->lock);
             const auto wanted = state->wanted.find(tick(time));
             if (wanted == state->wanted.end())
               return;
@@ -578,6 +589,7 @@ int extractVideoFrames(int argc, char **argv) {
           });
     }
     CFRelease(sample);
+    const std::lock_guard guard(out.lock);
     if (out.failed || out.next == indices.size())
       break;
   }

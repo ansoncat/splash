@@ -265,6 +265,10 @@ struct Runtime::Impl {
     uint32_t gridHeight = 0;
     uint32_t gridWidth = 0;
     uint32_t frames = 1;
+    // A pruned video's layout: its rows depend on more than its pixels.
+    uint32_t tokens = 0;
+    uint32_t tubelets = 1;
+    uint32_t textTokens = 0;
 
     bool operator==(const ImageKey &) const = default;
   };
@@ -603,7 +607,8 @@ struct Runtime::Impl {
   }
 
   static ImageKey imageKey(const ImageSpan &span) noexcept {
-    return {span.digestLo, span.digestHi, span.gridHeight, span.gridWidth, span.frames};
+    return {span.digestLo, span.digestHi, span.gridHeight, span.gridWidth, span.frames,
+            span.tokens, span.tubelets, span.textTokens};
   }
 
   // The rows of an identical image that something still holds, moved to the

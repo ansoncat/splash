@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstring>
 #include <numeric>
@@ -166,11 +167,13 @@ uint16_t bf16Bits(float value) {
 }
 
 // `kept` 7 keeps the most changed rows; 11 drops one of three tied rows,
-// the last.
-void pruning(metal::MetalBackend &backend, uint32_t kept) {
+// the last. A NaN row sorts first, as in torch, and still exactly `kept`
+// rows are kept.
+void pruning(metal::MetalBackend &backend, uint32_t kept, bool nan = false) {
   // Each row (1, s): its tubelets' slopes, with a repeat and two ties.
-  const std::vector<std::vector<float>> slopes{
+  std::vector<std::vector<float>> slopes{
       {0.0F, 0.5F, 1.0F, 2.0F}, {0.0F, 0.75F, 0.5F, 4.0F}, {0.0F, 0.75F, 2.0F, 0.25F}};
+  if (nan) slopes[1][2] = std::numeric_limits<float>::quiet_NaN();
   const ops::VideoPruningShape shape{3, {4, 4, 2}, 256, kept, 5};
   const std::vector<uint32_t> cuts{0, 2, 4};
   const uint32_t rows = shape.grid.mergedTokens(), stride = ops::Vision::embeddingRows(shape.grid);
@@ -211,26 +214,28 @@ void pruning(metal::MetalBackend &backend, uint32_t kept) {
     }
   std::vector<uint32_t> order(total);
   std::iota(order.begin(), order.end(), 0U);
-  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) { return d[x] > d[y]; });
+  std::stable_sort(order.begin(), order.end(), [&](uint32_t x, uint32_t y) {
+    return std::isnan(d[x]) ? !std::isnan(d[y]) : d[x] > d[y];
+  });
   std::vector<bool> keeps(total);
   for (uint32_t i = 0; i < shape.kept; ++i) keeps[order[i]] = true;
   // The span's rows: text up to each tubelet's cut, its kept rows, the rest.
-  std::vector<float> expected;
+  // Each is the bits of a text row's value, or of a tubelet row's slope.
+  std::vector<std::pair<bool, uint16_t>> expected;
   uint32_t token = 0;
   for (uint32_t t = 0; t < shape.tubelets; ++t) {
-    for (; token < cuts[t]; ++token) expected.push_back(100.0F + token);
+    for (; token < cuts[t]; ++token) expected.emplace_back(true, bf16Bits(100.0F + token));
     for (uint32_t p = 0; p < rows; ++p)
-      if (keeps[t * rows + p]) expected.push_back(-1.0F - slopes[t][p]);
+      if (keeps[t * rows + p]) expected.emplace_back(false, bf16Bits(slopes[t][p]));
   }
-  for (; token < shape.textTokens; ++token) expected.push_back(100.0F + token);
+  for (; token < shape.textTokens; ++token) expected.emplace_back(true, bf16Bits(100.0F + token));
   test::require(expected.size() == shape.textTokens + shape.kept, "the reference lays out the wrong row count");
   const auto *out = static_cast<const uint16_t *>(output.contents());
   for (uint32_t row = 0; row < expected.size(); ++row) {
     const uint16_t *got = out + uint64_t{row} * width;
-    const bool isText = expected[row] >= 100.0F;
-    const bool matches = isText ? got[0] == bf16Bits(expected[row]) && got[width - 1] == bf16Bits(expected[row])
-                                : got[0] == bf16Bits(1.0F) && got[1] == bf16Bits(-1.0F - expected[row]) &&
-                                      got[width - 1] == 0;
+    const auto [isText, bits] = expected[row];
+    const bool matches = isText ? got[0] == bits && got[width - 1] == bits
+                                : got[0] == bf16Bits(1.0F) && got[1] == bits && got[width - 1] == 0;
     test::require(matches, "video pruning row " + std::to_string(row) + " is not the processor's");
   }
 }
@@ -247,6 +252,7 @@ int main(int argc, char **argv) {
     run(backend, radio, true);
     pruning(backend, 7);
     pruning(backend, 11);
+    pruning(backend, 7, true);
     // A tower the kernels do not compile.
     radio.heads = 20;
     test::rejects([&] { static_cast<void>(ops::Vision::scratchBytes(radio, 4)); }, "no vision kernels for the tower",
