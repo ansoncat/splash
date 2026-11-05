@@ -697,6 +697,24 @@ class ImageRequestTest(HarnessTestCase):
         video = images.prepare_video(clip.read_bytes(), str(binary), 1.0, 128, 30.0)
         self.assertEqual(len(video.tubelets), 1)
 
+    def test_sampled_frames_decode_as_a_full_decode_does(self):
+        """H.264 with B-frames and 2.5 s open GOPs, sampled each second: the
+        decoder skips the runs no sampled frame needs, and a sampled frame just
+        before a sync frame starts a GOP earlier. The hash is a full decode's."""
+        import hashlib
+        import subprocess
+
+        root = Path(__file__).resolve().parents[3]
+        binary = root / "build/splash"
+        if not binary.exists():
+            self.skipTest("needs build/splash")
+        clip = root / "dev/tests/fixtures/videos/open_gop_bframes.mp4"
+        output = subprocess.run([binary, "video-frames", clip, "1", "128"], capture_output=True, check=True).stdout
+        self.assertEqual(
+            hashlib.sha256(output).hexdigest(),
+            "cfcd36debd1f836fb013044d50050209cfe547c6cb8dcdb036f9e882d4977d15",
+        )
+
     def test_video_frames_resize_as_the_processor_does(self):
         # _compute_target_patches_video: 1024 patches, sides even.
         for (height, width), patches in {

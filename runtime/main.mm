@@ -486,6 +486,11 @@ int extractVideoFrames(int argc, char **argv) {
   // the display size from the track header, which can be off by a fraction
   // (568.9 for 568 coded) or scaled by the pixel aspect ratio.
   CMVideoDimensions dimensions{0, 0};
+  // Per sample buffer, in decode order: whether decoding can start there, and
+  // its earliest presentation time; per frame, the buffer that holds it.
+  std::vector<bool> sync;
+  std::vector<int64_t> earliest;
+  std::map<int64_t, size_t> holder;
   {
     auto [reader, output] = samples();
     while (CMSampleBufferRef sample = [output copyNextSampleBuffer]) {
@@ -493,9 +498,20 @@ int extractVideoFrames(int argc, char **argv) {
         dimensions = CMVideoFormatDescriptionGetDimensions(format);
       const CMItemCount count = CMSampleBufferGetNumSamples(sample);
       std::vector<CMSampleTimingInfo> timing(static_cast<size_t>(count));
+      int64_t first = INT64_MAX;
       if (count && CMSampleBufferGetOutputSampleTimingInfoArray(sample, count, timing.data(), nullptr) == noErr)
-        for (const CMSampleTimingInfo &info : timing)
+        for (const CMSampleTimingInfo &info : timing) {
           times.push_back(tick(info.presentationTimeStamp));
+          holder.emplace(times.back(), sync.size());
+          first = std::min(first, times.back());
+        }
+      CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, false);
+      const auto notSync = attachments && CFArrayGetCount(attachments)
+          ? static_cast<CFBooleanRef>(CFDictionaryGetValue(
+                static_cast<CFDictionaryRef>(CFArrayGetValueAtIndex(attachments, 0)), kCMSampleAttachmentKey_NotSync))
+          : nullptr;
+      sync.push_back(!(notSync && CFBooleanGetValue(notSync)));
+      earliest.push_back(first);
       CFRelease(sample);
     }
     if (reader.status != AVAssetReaderStatusCompleted)
@@ -543,11 +559,43 @@ int extractVideoFrames(int argc, char **argv) {
   } out;
   for (size_t i = 0; i < indices.size(); ++i)
     out.wanted.emplace(times[static_cast<size_t>(indices[i])], i);
+  // Only the buffers a sampled frame needs: from the sync buffer before it,
+  // or the one before that when the frame shows earlier than its sync buffer
+  // (a leading picture of an open GOP), through its own. An hour at 30 fps
+  // decodes 128 short runs instead of 100,000 frames.
+  std::vector<bool> needed(sync.size(), false);
+  for (const auto &[time, position] : out.wanted) {
+    const size_t own = holder.at(time);
+    size_t start = own;
+    while (start > 0 && !sync[start])
+      --start;
+    if (time < earliest[start] && start > 0)
+      for (--start; start > 0 && !sync[start]; --start) {
+      }
+    for (size_t b = start; b <= own; ++b)
+      needed[b] = true;
+  }
   out.width = width, out.height = height;
   Output *const state = &out;
   VTDecompressionSessionRef session = nullptr;
   auto [reader, output] = samples();
+  size_t buffer = 0;
+  bool skipped = false;
   while (CMSampleBufferRef sample = [output copyNextSampleBuffer]) {
+    // The file changed between the passes: decode everything rather than guess.
+    const bool wanted = buffer >= needed.size() || needed[buffer];
+    ++buffer;
+    if (!wanted) {
+      skipped = true;
+      CFRelease(sample);
+      continue;
+    }
+    // After a gap, let the frames the decoder holds for reordering out first.
+    if (skipped && session) {
+      VTDecompressionSessionFinishDelayedFrames(session);
+      VTDecompressionSessionWaitForAsynchronousFrames(session);
+    }
+    skipped = false;
     CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sample);
     if (format && CMSampleBufferGetNumSamples(sample)) {
       if (!session) {
