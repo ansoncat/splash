@@ -72,8 +72,6 @@ NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout,
     m.shape = layout.moeBlockShape();
     m.shape.experts = count;
     m.shape.expertIntermediateSize = NemotronHLayout::layerExpertWidth(layout, index);
-    const ops::BlockMoeWeights *const blocks[] = {&m.experts};
-    m.formats = ops::moeFormats(blocks);
     if (!m.shape.valid()) throw WeightStoreError("Nemotron-H MoE block has no compiled shape");
     layer.block = std::move(m);
     break;
@@ -134,7 +132,8 @@ QwenTargetGeometry qwenTargetGeometry(const NemotronHWeights &weights, std::span
   geometry.kvLayout = weights.layout.kvLayout();
   geometry.stateLayout = weights.layout.gdnStateLayout();
   // The runtime sizes its MoE scratch for the geometry's shape, of the most
-  // experts and the widest; each block runs its own (NemotronMoeWeights).
+  // experts and the widest, and its formats, which every block's plans take
+  // (NemotronHTarget) so that a block of other formats needs no more.
   std::vector<const ops::BlockMoeWeights *> moeBlocks;
   for (const NemotronHLayerWeights &layer : weights.layers)
     std::visit(

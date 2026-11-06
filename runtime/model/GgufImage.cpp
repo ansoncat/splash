@@ -1062,6 +1062,7 @@ void requireMetadata(const GgufFile &file, std::string_view architecture, const 
   if (architecture == NemotronHGguf::architecture) {
     NemotronHGguf::requireMetadata(metadata, expect, expectFloat, geometry);
     if (!mismatched.empty()) throw GgufError("GGUF metadata does not match the target: " + mismatched);
+    NemotronHGguf::arrays(file, geometry);
     return;
   }
   // An array, named alone, that `matches` takes.

@@ -214,7 +214,6 @@ struct NemotronMambaWeights final {
 // and down, ReLU^2 between them.
 struct NemotronMoeWeights final {
   ops::MoeShape shape;
-  ops::MoeFormats formats; // its experts' and router's (ops::moeFormats)
   ops::BlockMoeWeights experts;
   ops::Projection latentDown;
   ops::Projection latentUp;

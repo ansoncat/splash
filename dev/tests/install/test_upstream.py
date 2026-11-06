@@ -130,6 +130,24 @@ class UpstreamTest(unittest.TestCase):
                 draft=draft_dir(self.root / "draft", DENSE) / "config.json",
                 **gguf_check,
             )
+        # Nemotron's per-layer top-k is in no tensor's shape: a Bolt header
+        # taking 8 experts where the layout takes 9 is refused by its arrays.
+        bolt = families.named("Nemotron-3.5-Bolt")
+        values = fixture(family=bolt)
+        key = "nemotron_h_moe.expert_used_count"
+        values[key] = [8 if count else 0 for count in values[key]]
+        directory = self.root / "bolt-top-k" / "target"
+        directory.mkdir(parents=True)
+        write_target(directory / "model.gguf", values, tensor_table(bolt))
+        with self.assertRaisesRegex(
+            models.ModelError, "does not match the target: expert_used_count"
+        ):
+            upstream.check_model(
+                "gguf",
+                "none",
+                CONFIGS / bolt.name.lower() / "config.json",
+                gguf_headers=directory,
+            )
         # A differing size or model type is another model, whatever the
         # repository is called; the engine names it. A field a family's
         # fine-tune could change is refused as a mismatch.
