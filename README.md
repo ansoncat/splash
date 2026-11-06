@@ -12,11 +12,12 @@
 > ([Nemotron 3.5](#nemotron-35-this-fork)), and video input for both.
 > Everything else is upstream. 中文說明：[README.zh-TW.md](README.zh-TW.md).
 >
-> - `nemotron` (this default branch): all of the fork's changes, on upstream's
->   `main` of October 31 (after 1.5.0). Upstream's 1.6.0 is not merged yet.
+> - `nemotron` (this default branch): all of the fork's changes, merged with
+>   upstream's 1.6.0 (`main` of November 5).
+> - `nemotron-1.6`: that merge as its own branch.
 > - `main`: tracks upstream unchanged.
-> - Other branches each stack on the one before, for changes that may be
->   proposed upstream:
+> - Other branches each stack on the one before, on upstream's `main` of
+>   October 31 (after 1.5.0), for changes that may be proposed upstream:
 >   - `nemotron-3.5-bolt`: Bolt with its LiLiCorr draft and RADIO vision, as
 >     proposed in [incoai/splash#633](https://github.com/incoai/splash/issues/633).
 >   - `bolt-streaming`: streams Nemotron-H's routed experts from the SSD.
@@ -172,6 +173,8 @@ reuse it.
 
 - When the experts don't fit, `--expert-memory auto` streams the routed experts
   from the SSD, as for the other MoE families.
+- Super's native window is 1,048,576 tokens; Splash serves it up to 1,010,000,
+  the most `--max-context` takes, which is also its `auto` ceiling.
 - Super's official NVFP4 GGUF loads too: its routed down projection has
   2,688-wide rows, which load as NVFP4G64
   ([formats](docs/models.md#gguf-targets)).

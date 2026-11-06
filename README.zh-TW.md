@@ -6,23 +6,27 @@ NVIDIA Nemotron 3.5 兩顆模型：
 - **Bolt**（74B-A9B）：自動下載 NVIDIA 的 LiLiCorr 草稿模型，支援看圖。
 - **Super VL**（120B-A12B）：要自己下載 target、草稿與 mmproj，支援看圖。
 - 兩顆都能從 SSD 串流 expert（記憶體不夠放全部 expert 時）。
+- Super 原生視窗是 1,048,576 token；Splash 最多開到 1,010,000（`--max-context` 的上限，
+  `auto` 也以此為上限）。
 - 兩顆都能看影片，並照官方做法修剪影片 token（EVS）。
 
-其餘功能和上游相同；上游的使用說明見 [README.md](README.md)。目前基於上游 10-31 的
-`main`（1.5.0 之後），**還沒合併上游 1.6.0**。上游的桌面 App 和 Homebrew 版不含這些
-改動，要從原始碼編譯。
+其餘功能和上游相同；上游的使用說明見 [README.md](README.md)。`nemotron` 已合併上游
+1.6.0（11-05 的 `main`）。上游的桌面 App 和 Homebrew 版不含這些改動，要從原始碼編譯。
 
 ## 分支
 
 | 分支 | 內容 |
 | --- | --- |
-| `nemotron`（預設） | 全部改動＋README |
+| `nemotron`（預設） | 全部改動＋README，已合併上游 1.6.0 |
+| `nemotron-1.6` | 上游 1.6.0 的合併，單獨留一個分支 |
 | `main` | 只追上游，不改 |
 | `nemotron-3.5-bolt` | Bolt 與草稿、看圖（[incoai/splash#633](https://github.com/incoai/splash/issues/633)） |
 | `bolt-streaming` | 在前一個之上：SSD 串流 expert |
 | `bench-tight-memory` | 在前一個之上：`backend-benchmark` 小記憶體暖機 |
 | `super-vl` | 在前一個之上：Super VL、官方 NVFP4 GGUF（NVFP4G64） |
 | `nemotron-video` | 在前一個之上：影片輸入與 EVS 修剪 |
+
+`nemotron-3.5-bolt` 到 `nemotron-video` 這五個分支仍基於上游 10-31 的 `main`（1.5.0 之後）。
 
 ## 編譯與啟動
 
