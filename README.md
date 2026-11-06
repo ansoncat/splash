@@ -9,9 +9,11 @@
 > **This is a fork of [incoai/splash](https://github.com/incoai/splash).** It adds
 > NVIDIA Nemotron 3.5 Bolt (74B-A9B) and Nemotron 3.5 Super VL (120B-A12B), with
 > NVIDIA's LiLiCorr drafts, RADIO vision, and SSD expert streaming for both
-> ([Nemotron 3.5](#nemotron-35-this-fork)). Everything else is upstream.
+> ([Nemotron 3.5](#nemotron-35-this-fork)), and video input for both.
+> Everything else is upstream. 中文說明：[README.zh-TW.md](README.zh-TW.md).
 >
-> - `nemotron` (this default branch): all of the fork's changes, rebased on upstream.
+> - `nemotron` (this default branch): all of the fork's changes, on upstream's
+>   `main` of October 31 (after 1.5.0). Upstream's 1.6.0 is not merged yet.
 > - `main`: tracks upstream unchanged.
 > - Other branches each stack on the one before, for changes that may be
 >   proposed upstream:
@@ -20,6 +22,7 @@
 >   - `bolt-streaming`: streams Nemotron-H's routed experts from the SSD.
 >   - `bench-tight-memory`: `backend-benchmark` warm-up under a tight `--max-memory`.
 >   - `super-vl`: Nemotron 3.5 Super VL, and NVFP4G64 for its official NVFP4 GGUF.
+>   - `nemotron-video`: video input with NVIDIA's EVS pruning.
 >     `nemotron` is this branch plus this README.
 >
 > The desktop app and Homebrew formula below are upstream's and don't include
@@ -179,7 +182,10 @@ reuse it.
   timestamps. Like the processor, it prunes 70% of the video's tokens by
   default (EVS, `--video-pruning`; `0` keeps them all), so a 2-minute video at
   1 FPS costs about 6.2K tokens instead of 16.8K. Prompt token counts match the
-  processor's.
+  processor's. Only the GOPs holding sampled frames are decoded: a
+  30–60-minute video took about 20 s here. A video may be up to 256 MiB and take up
+  to 120 s to decode; its base64 exceeds the default request size above about
+  96 MiB, so serve long videos with `--max-request-size 1G`.
 
 Limits outside this fork:
 
@@ -312,6 +318,18 @@ backend doesn't run them in NVFP4; Splash runs the official GGUF.
 On HumanEval+, BFCL and a Traditional Chinese check, the measured quantizations
 of each model showed no clear quality difference (Super's NVFP4 wasn't
 measured). The maintainer runs Bolt's NVFP4 and Super's UD-IQ2_XXS.
+
+Video, Bolt at 1 FPS and up to 128 frames, greedy, EVS pruning off (`0`)
+against the default `0.7`:
+
+| Set | Thinking | Questions | Pruning 0 | Pruning 0.7 | Prompt tokens |
+| --- | --- | ---: | ---: | ---: | --- |
+| MVBench, 3 tasks (3–20 s clips) | off | 600 | 58.0% | 57.7% | −57% |
+| Video-MME long (30–60 min) | on | 102 | 41.2% | 45.1% | −61% |
+
+Neither difference is significant (McNemar p 0.89 and 0.45). On Video-MME,
+a third of the answers ran out of their 16,384 tokens while thinking and count
+as wrong, and only videos up to 256 MiB were used.
 
 ## Design
 
