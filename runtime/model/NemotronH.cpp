@@ -69,13 +69,11 @@ NemotronHLayerWeights readLayer(WeightFile &file, const NemotronHLayout &layout,
     // The store keeps the block's router and selection bias, which predict
     // its routes.
     if (experts.store) experts.store->bind(block, m.experts);
-    const ops::QuantizedSegment &up = m.experts.up.routed, &down = m.experts.down.routed;
     m.shape = layout.moeBlockShape();
     m.shape.experts = count;
     m.shape.expertIntermediateSize = NemotronHLayout::layerExpertWidth(layout, index);
-    m.shape.expertFormat = up.formatId;
-    m.shape.registerFormats =
-        quant_register_tensor(up.formatId, up.inputSize) && quant_register_tensor(down.formatId, down.inputSize);
+    const ops::BlockMoeWeights *const blocks[] = {&m.experts};
+    m.formats = ops::moeFormats(blocks);
     if (!m.shape.valid()) throw WeightStoreError("Nemotron-H MoE block has no compiled shape");
     layer.block = std::move(m);
     break;
@@ -137,8 +135,7 @@ QwenTargetGeometry qwenTargetGeometry(const NemotronHWeights &weights, std::span
   geometry.stateLayout = weights.layout.gdnStateLayout();
   // The runtime sizes its MoE scratch for the geometry's shape, of the most
   // experts and the widest; each block runs its own (NemotronMoeWeights).
-  geometry.moeExpertFormat = GGUF_FMT_COUNT;
-  geometry.moeRegisterFormats = true;
+  std::vector<const ops::BlockMoeWeights *> moeBlocks;
   for (const NemotronHLayerWeights &layer : weights.layers)
     std::visit(
         [&](const auto &block) {
@@ -146,8 +143,7 @@ QwenTargetGeometry qwenTargetGeometry(const NemotronHWeights &weights, std::span
           if constexpr (std::is_same_v<Block, NemotronMoeWeights>) {
             for (const ops::Projection *p : {&block.latentDown, &block.latentUp, &block.sharedUp, &block.sharedDown})
               geometry.include(*p);
-            geometry.moeExpertFormat = block.shape.expertFormat;
-            geometry.moeRegisterFormats &= block.shape.registerFormats;
+            moeBlocks.push_back(&block.experts);
           } else if constexpr (std::is_same_v<Block, NemotronMambaWeights>) {
             geometry.include(block.in);
             geometry.include(block.out);
@@ -157,6 +153,7 @@ QwenTargetGeometry qwenTargetGeometry(const NemotronHWeights &weights, std::span
           }
         },
         layer.block);
+  geometry.moeFormats = ops::moeFormats(moeBlocks);
   geometry.prefillProjections = geometry.decodeProjections;
   geometry.include(weights.logitsProjection);
   for (auto *shapes : {&geometry.prefillProjections, &geometry.decodeProjections}) {

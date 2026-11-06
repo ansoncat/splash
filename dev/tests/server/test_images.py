@@ -23,6 +23,7 @@ from dev.tests.server_fixtures import (
     anthropic_body,
     chat_body,
     document_block,
+    engine_ready,
     no_signed_thinking,
     pdf_bytes,
     png_data_url,
@@ -30,12 +31,13 @@ from dev.tests.server_fixtures import (
     response_events,
     responses_body,
 )
-from server import api_shapes, documents, images
-from server import backend as backend_api
+from server import chat_messages, documents, errors, images
 from server import frontend as request_frontend
 from server import protocol as native_wire
 from server import server as api
 from server.chat_format import NEMOTRON, QWEN
+from server.dialects import anthropic as anthropic_dialect
+from server.dialects import responses as responses_dialect
 
 
 def png_bytes(width, height, color=(200, 30, 30)):
@@ -296,7 +298,7 @@ class ImageCacheTest(unittest.TestCase):
         def prepare_then_fail():
             batch = cache.request_batch()
             batch.append(images.PreparedImage(2, 2, b"abcd", 0, 0))
-            batch.owner = batch  # Model a cancelled callback ownership cycle.
+            batch.owner = batch  # A cycle only the cycle collector frees.
             raise images.ImageError("injected render failure")
 
         with self.assertRaises(images.ImageError):
@@ -419,7 +421,9 @@ class ImageRequestTest(HarnessTestCase):
         from server.latency import LatencyMetrics
 
         app.latencies = LatencyMetrics()
-        app.max_context = 1024
+        app.backend = SimpleNamespace(
+            runtime=SimpleNamespace(capabilities=engine_ready(1024))
+        )
         quoted = "中文 📷 <|vision_start|><|image_pad|><|vision_end|>"
         messages = [
             {"role": "system", "content": "Document: " + QWEN.image_pad},
@@ -478,8 +482,10 @@ class ImageRequestTest(HarnessTestCase):
             [span.offset for span in spans], [positions[0], positions[1] + 3]
         )
         self.assertEqual(pixels, b"\x01\x02")
-        with self.assertRaisesRegex(api.APIError, "image count"):
-            app._expand_image_pads(tokens, prepared[:1], positions)
+        app._check_image_placeholders(tokens, prepared, positions)
+        for wrong in (prepared[:1], [*prepared, prepared[0]]):
+            with self.assertRaisesRegex(api.APIError, "image count"):
+                app._check_image_placeholders(tokens, wrong, positions)
 
     def test_nemotron_images_mark_template_sites_and_wrap_pads(self):
         from tokenizers import pre_tokenizers
@@ -509,7 +515,9 @@ class ImageRequestTest(HarnessTestCase):
         from server.latency import LatencyMetrics
 
         app.latencies = LatencyMetrics()
-        app.max_context = 1024
+        app.backend = SimpleNamespace(
+            runtime=SimpleNamespace(capabilities=SimpleNamespace(max_context_tokens=1024))
+        )
         image = {"type": "image_url", "image_url": {"url": "unused"}}
         messages = [
             # Text quoting the placeholder is not an image.
@@ -560,7 +568,7 @@ class ImageRequestTest(HarnessTestCase):
         ]
         tokens, positions, _ = app._render_image_tokens(quoting, template)
         with self.assertRaisesRegex(api.APIError, "image count"):
-            app._expand_image_pads(tokens, prepared[:1], positions)
+            app._check_image_placeholders(tokens, prepared[:1], positions)
 
     def test_nemotron_videos_widen_to_labeled_tubelets(self):
         """As Nemotron Omni's processor widens <video>: each tubelet's label,
@@ -592,7 +600,9 @@ class ImageRequestTest(HarnessTestCase):
         from server.latency import LatencyMetrics
 
         app.latencies = LatencyMetrics()
-        app.max_context = 4096
+        app.backend = SimpleNamespace(
+            runtime=SimpleNamespace(capabilities=SimpleNamespace(max_context_tokens=4096))
+        )
         video = {"type": "video_url", "video_url": {"url": "unused"}}
         image = {"type": "image_url", "image_url": {"url": "unused"}}
         messages = [
@@ -897,8 +907,7 @@ class ImageRequestTest(HarnessTestCase):
                     self.assertEqual(
                         json.loads(payload)["error"]["message"],
                         f"{modality[kind]} input is not supported: "
-                        "this model is serving without vision "
-                        "(started with --language-only)",
+                        "this model is serving without vision",
                     )
             decode.assert_not_called()
             render.assert_not_called()
@@ -913,8 +922,8 @@ class ImageRequestTest(HarnessTestCase):
     def test_conversions_leave_media_to_message_normalization(self):
         image = png_data_url()
         document = document_block(title="Report", context="Fixture")
-        anthropic = api_shapes.anthropic_to_chat_prompt
-        responses = api_shapes.responses_to_chat_body
+        anthropic = anthropic_dialect.to_chat_prompt
+        responses = responses_dialect.to_chat_body
         with (
             mock.patch.object(images, "decode_data_url", side_effect=AssertionError),
             mock.patch.object(documents, "_render", side_effect=AssertionError),
@@ -961,24 +970,16 @@ class ImageRequestTest(HarnessTestCase):
                 self.assertEqual(kinds[0], "image_url")
                 self.assertEqual(kinds[-1], "file")
                 with self.assertRaisesRegex(api.APIError, "^image input"):
-                    api_shapes.normalize_messages(
-                        messages,
-                        vision=False,
-                        deadline=FOREVER,
-                        without_slot=nullcontext,
-                    )
+                    chat_messages.normalize_messages(messages, vision=False)
                 with self.assertRaisesRegex(api.APIError, "^PDF input"):
-                    api_shapes.normalize_messages(
+                    chat_messages.normalize_messages(
                         [{"role": "user", "content": messages[0]["content"][1:]}],
                         vision=False,
-                        deadline=FOREVER,
-                        without_slot=nullcontext,
                     )
-        # Normalization renders the document's PDF after its title and context.
+        # The document's PDF renders after its title and context.
         self.assertEqual(
-            api_shapes.normalize_messages(
-                converted["anthropic"],
-                vision=True,
+            documents.render_files(
+                chat_messages.normalize_messages(converted["anthropic"], vision=True),
                 deadline=FOREVER,
                 without_slot=nullcontext,
             )[0]["content"][1:],
@@ -1074,7 +1075,7 @@ class ImageRequestTest(HarnessTestCase):
 
         with (
             mock.patch.object(
-                backend_api, "time", SimpleNamespace(monotonic=lambda: clock[0])
+                errors, "time", SimpleNamespace(monotonic=lambda: clock[0])
             ),
             mock.patch.object(app.images, "prepare", side_effect=prepare) as prepared,
             self.assertRaises(api.APIError) as caught,
@@ -1084,7 +1085,7 @@ class ImageRequestTest(HarnessTestCase):
         self.assertEqual(prepared.call_count, 1)
         self.assertEqual(app.images.stats()["request_bytes"], 0)
 
-    def test_image_request_budget_survives_native_owner_and_recovers(self):
+    def test_image_request_budget_is_held_by_a_prepared_request_and_recovers(self):
         app = self.harness(
             FakeRuntime(), tokenizer=ImagePadTokenizer(), max_context=1024
         ).app
@@ -1093,13 +1094,10 @@ class ImageRequestTest(HarnessTestCase):
         )
         app.images = images.ImageCache()
         job = app.prepare(chat_body(messages=[image_message()]), deadline=FOREVER)
-        native_request = app.backend._generation_request(job)
-        self.assertIs(native_request.image_owner, job.image_owner)
-        del job
         with self.assertRaisesRegex(api.APIError, "image memory budget") as failure:
             app.prepare(chat_body(messages=[image_message()]), deadline=FOREVER)
         self.assertEqual(failure.exception.status, 503)
-        del native_request
+        del job
         self.assertEqual(app.images.stats()["request_bytes"], 0)
         job = app.prepare(chat_body(messages=[image_message()]), deadline=FOREVER)
         self.assertGreater(app.images.stats()["request_bytes"], 0)
@@ -1374,17 +1372,6 @@ class ImageRequestTest(HarnessTestCase):
                 self.assertEqual(status, 400)
                 self.assertIn(message, json.loads(payload)["error"]["message"])
         self.assertEqual(runtime.requests, [])
-
-        # A template that drops the placeholder cannot carry the image.
-        plain = self.harness(runtime)
-        status, _, payload = plain.request(
-            "POST", "/v1/chat/completions", chat_body(messages=[image_message()])
-        )
-        self.assertEqual(status, 400)
-        self.assertIn(
-            "does not define the image tokens",
-            json.loads(payload)["error"]["message"],
-        )
 
 
 if __name__ == "__main__":

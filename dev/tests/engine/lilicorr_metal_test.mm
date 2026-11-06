@@ -240,7 +240,7 @@ LaneReference reference(const LiLiCorrWeights &w, const EmbeddingWeights &embedd
         features[uint64_t{node} * kWidth + j] = roundBf16(silu(v));
       }
       for (uint32_t d = 0; d < kHidden; ++d)
-        embedded[uint64_t{node} * kHidden + d] = at(embedding.blocks().rows, uint64_t{top[rank]} * kHidden + d);
+        embedded[uint64_t{node} * kHidden + d] = at(embedding.rows().rows, uint64_t{top[rank]} * kHidden + d);
     }
   }
 
@@ -369,7 +369,7 @@ struct Fixture final {
     Weights weights(backend, seed * 31 + 7);
     w = weights.lilicorr();
     embedding = EmbeddingWeights(kVocabulary, kHidden,
-                                 NativeRows(weights.table(uint64_t{kVocabulary} * kHidden, 1.0F), GGUF_FMT_BF16));
+                                 StoredRows(weights.table(uint64_t{kVocabulary} * kHidden, 1.0F), GGUF_FMT_BF16));
     const uint32_t rows = lanes * kRows, positions = lanes * kPositions;
     const DraftSelectorWorkspace workspace = DraftSelector::workspace(positions);
     MetalBuffer logits = zeroed(backend, uint64_t{rows} * kVocabulary * sizeof(float));

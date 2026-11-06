@@ -15,7 +15,7 @@ from unittest import mock
 import numpy as np
 
 from dev.tests.fixture_files import write_gguf
-from dev.tests.installer_fixtures import BOLT, CONFIGS
+from dev.tests.installer_fixtures import BOLT, CONFIGS, fixture, tensor_table, write_target
 from install import assembly, dflash_gguf, hub, models, upstream
 
 F32, F16, Q8_0, BF16, NVFP4 = 0, 1, 8, 30, 40
@@ -137,7 +137,7 @@ class ConversionTest(unittest.TestCase):
         def stored(name, size):
             header = dflash_gguf.gguf.Metadata(source, tensors=True)
             alignment = 32
-            data = (header.consumed + alignment - 1) // alignment * alignment
+            data = (len(header.raw) + alignment - 1) // alignment * alignment
             offset = data + header.offsets[name]
             return raw[offset : offset + size]
 
@@ -220,11 +220,14 @@ class DraftFilesTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         configs = CONFIGS / BOLT.name.lower()
+        headers = self.root / "target"
+        headers.mkdir()
+        write_target(headers / "model.gguf", fixture(family=BOLT), tensor_table(BOLT))
         self.target = upstream.Target(
             "gguf",
             "none",
             configs / "config.json",
-            configs / "gguf-metadata.json",
+            headers,
             BOLT,
             {},
         )

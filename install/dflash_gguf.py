@@ -235,7 +235,7 @@ def write_checkpoint(path, stage):
     layers = values["dflash.block_count"]
     kv_heads = values["dflash.attention.head_count_kv"]
     alignment = values.get("general.alignment", 32)
-    data = (header.consumed + alignment - 1) // alignment * alignment
+    data = (len(header.raw) + alignment - 1) // alignment * alignment
     sources = dict(_tensors(layers, "blk.0.attn_sinks.weight" in header.tensors))
     missing = sorted(set(sources.values()) - set(header.tensors))
     if missing:
