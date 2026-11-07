@@ -190,9 +190,10 @@ public:
   // The governor of an engine that `budget` plans, as a start builds it: the
   // hard budget is its limit, the plan's pipeline and runtime reserves are
   // the untracked reserve, the host keeps the reserves EngineMemoryPolicy
-  // sets for the Mac's memory, and the streamed table's host memory is
-  // charged in full.
-  MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget, HostMemoryProvider hostMemory);
+  // sets for the Mac's memory (hostSpareReserve, --host-reserve, replaces
+  // the spare one), and the streamed table's host memory is charged in full.
+  MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget, HostMemoryProvider hostMemory,
+                 std::optional<uint64_t> hostSpareReserve = std::nullopt);
 
   // The only way to reserve memory. Storage and model components receive
   // only this transactional callback, so allocation stays governed without

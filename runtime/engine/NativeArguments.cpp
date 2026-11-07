@@ -168,6 +168,11 @@ NativeArguments parseNativeArguments(int argc, const char *const *argv) {
       if (value != "auto" && !parsePositive(value, bytes))
         throw UsageError("--sparse-kv-memory requires a positive byte count or auto");
       result.sparseKvMemory = bytes ? std::optional<uint64_t>(bytes) : std::nullopt;
+    } else if (option == "--host-reserve") {
+      uint64_t bytes = 0;
+      if (value != "auto" && value != "0" && !parsePositive(value, bytes))
+        throw UsageError("--host-reserve requires a nonnegative byte count or auto");
+      result.hostSpareReserve = value == "auto" ? std::nullopt : std::optional<uint64_t>(bytes);
     } else if (option == "--kv-spill") {
       if (value != "always")
         throw UsageError("--kv-spill requires always");

@@ -116,6 +116,11 @@ OPTIONS = {
         {"auto": None, "AUTO": None, "1200M": 1200 * 1024**2},
         ("0", "off", "bad", "-2G"),
     ),
+    "--host-reserve": values(
+        "--host-reserve",
+        {"auto": None, "0": 0, "2G": 2 * 1024**3, "512M": 512 * 1024**2},
+        ("off", "bad", "-2G"),
+    ),
     "--max-memory": values(
         "--max-memory",
         {

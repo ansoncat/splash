@@ -170,10 +170,11 @@ MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, uint64_t limitBytes
 }
 
 MemoryGovernor::MemoryGovernor(metal::MetalBackend &backend, const EngineMemoryBreakdown &budget,
-                               HostMemoryProvider hostMemory)
+                               HostMemoryProvider hostMemory, std::optional<uint64_t> hostSpareReserve)
     : MemoryGovernor(backend, budget.hardBudgetBytes,
                      EngineMemoryPolicy::hostAvailableReserveBytes(budget.physicalMemoryBytes),
-                     EngineMemoryPolicy::hostSpareReserveBytes(budget.physicalMemoryBytes), std::move(hostMemory),
+                     hostSpareReserve.value_or(EngineMemoryPolicy::hostSpareReserveBytes(budget.physicalMemoryBytes)),
+                     std::move(hostMemory),
                      budget.pipelineReserveBytes + budget.runtimeOverheadReserveBytes, budget.streamedTableBytes) {}
 
 uint64_t

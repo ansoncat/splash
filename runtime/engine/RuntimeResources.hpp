@@ -153,6 +153,10 @@ struct RuntimeResourcesConfig {
   // --sparse-kv-memory: the target of a spill-capable target's hot block
   // cache, at least its floor; none (auto) keeps its floor.
   std::optional<uint64_t> sparseKvMemory;
+  // --host-reserve: the spare memory the governor leaves the Mac's other
+  // work before caches and streamed experts grow; none (auto) keeps
+  // EngineMemoryPolicy::hostSpareReserveBytes.
+  std::optional<uint64_t> hostSpareReserve;
   // --kv-spill always: every request of a spill-capable target spills, for
   // validation (EngineSpillConfig::always).
   bool kvSpillAlways = false;

@@ -189,6 +189,8 @@ void testServerCommandLines(const char *path) {
       // Auto is the engine's default, which the server leaves out.
       {"expert_memory_auto", [](NativeArguments &) {}},
       {"sparse_kv_memory", [](NativeArguments &read) { read.sparseKvMemory = 1200 * (kGiB >> 10); }},
+      {"host_reserve", [](NativeArguments &read) { read.hostSpareReserve = 2 * kGiB; }},
+      {"host_reserve_zero", [](NativeArguments &read) { read.hostSpareReserve = 0; }},
   };
   // Every field but the model inspected from the directory, whose RoPE
   // scaling MAX_CONTEXT sets.
@@ -208,6 +210,7 @@ void testServerCommandLines(const char *path) {
            read.preventIdleSleep == meant.preventIdleSleep &&
            read.neuralEngine == meant.neuralEngine && read.pleMemory == meant.pleMemory &&
            read.expertMemory == meant.expertMemory && read.sparseKvMemory == meant.sparseKvMemory &&
+           read.hostSpareReserve == meant.hostSpareReserve &&
            read.kvSpillAlways == meant.kvSpillAlways && read.kvWindowTrim == meant.kvWindowTrim &&
            read.verifyRows == meant.verifyRows;
   };
@@ -249,9 +252,10 @@ void testVerifyRows() {
 void testStreamedMemoryAndSpill() {
   const ModelDirectory model;
   const NativeArguments automatic =
-      parse(model, {"auto", "auto", "--expert-memory", "auto", "--ple-memory", "auto", "--sparse-kv-memory", "auto"});
+      parse(model, {"auto", "auto", "--expert-memory", "auto", "--ple-memory", "auto", "--sparse-kv-memory", "auto",
+                     "--host-reserve", "auto"});
   require(automatic.expertMemory == StreamedSetting{} && automatic.pleMemory == StreamedSetting{} &&
-              !automatic.sparseKvMemory && !automatic.kvSpillAlways,
+              !automatic.sparseKvMemory && !automatic.hostSpareReserve && !automatic.kvSpillAlways,
           "auto did not leave the stores to the planner");
   require(parse(model, {"auto", "auto", "--kv-spill", "always"}).kvSpillAlways, "--kv-spill always was not read");
 }

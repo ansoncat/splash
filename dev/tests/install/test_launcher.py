@@ -607,6 +607,8 @@ class LauncherTests(unittest.TestCase):
             "--video-fps",
             "--video-max-frames",
             "--video-pruning",
+            # This fork's host spare reserve, likewise.
+            "--host-reserve",
         }
         self.assertIn("--max-memory", flags)
         table = Path(launcher.__file__).resolve().parents[1] / (

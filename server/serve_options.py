@@ -191,6 +191,18 @@ def parse_sparse_kv_memory(value):
     return _memory_size(value, "1200M", ())
 
 
+def parse_host_reserve(value):
+    """'auto' (None), 0, or a byte count with an optional K, M or G suffix."""
+    if value.strip() == "0":
+        return 0
+    try:
+        return parse_max_memory(value)
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(
+            "use auto, 0, or a size such as 2G"
+        ) from None
+
+
 def parse_cache_dir(value):
     if not value.strip():
         raise argparse.ArgumentTypeError("must name a directory")
@@ -570,6 +582,19 @@ SERVE_OPTIONS = (
         ),
         engine=EngineArgument("--sparse-kv-memory"),
         needs="sparse_kv",
+    ),
+    ServeOption(
+        "--host-reserve",
+        "memory",
+        dict(
+            type=parse_host_reserve,
+            default=None,
+            metavar="SIZE",
+            help="spare host memory that caches and streamed experts leave "
+            "the Mac's other apps before they grow, e.g. 2G; 0 leaves only "
+            "the 1 GiB margin (default: auto, 7%% of RAM between 2G and 7G)",
+        ),
+        engine=EngineArgument("--host-reserve"),
     ),
     ServeOption(
         "--kv-format",

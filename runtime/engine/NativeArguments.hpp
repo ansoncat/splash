@@ -75,6 +75,9 @@ struct NativeArguments final {
   // --sparse-kv-memory BYTES|auto: the target of a block-sparse target's hot
   // block cache; none, auto, its floor (RuntimeResourcesConfig::sparseKvMemory).
   std::optional<uint64_t> sparseKvMemory;
+  // --host-reserve BYTES|auto: the host spare reserve; none, auto, the
+  // policy's (RuntimeResourcesConfig::hostSpareReserve).
+  std::optional<uint64_t> hostSpareReserve;
   // --kv-spill always: every request of a target that can spill keeps its
   // KV on the SSD cache, for validation; without it, the requests memory
   // cannot hold (EngineSpillConfig::always).

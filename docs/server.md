@@ -116,6 +116,7 @@ paths for `--model-dir`, `--draft-model` and `--mmproj`.
 | `--ple-memory` | Auto | Qwen3.8-Flash-Next: read the PLE n-gram table from the SSD through a host row cache of this size, e.g. `2G`; `off` loads the whole table. Auto loads it where memory holds it, else streams it through its share of the budget. See [PLE table streaming](#ple-table-streaming). |
 | `--expert-memory` | Auto | MoE targets: the memory routed experts keep, e.g. `16G`; they stream through a store of exactly this size, which neither grows nor gives memory back, and read the other experts from the SSD when a step routes them; a size that holds every expert, or `off`, loads them all. Auto loads them all where memory holds them, else gives them what the context leaves, given back down to their floor while requests need it. See [streamed experts](#streamed-experts). |
 | `--sparse-kv-memory` | Auto | Qwen3.8-Flash-Next: memory for the KV blocks read back from the SSD for requests whose KV is there, e.g. `1200M`; never below its floor, which auto keeps. See [KV on the SSD](#kv-on-the-ssd). |
+| `--host-reserve` | Auto | Spare host memory that caches and streamed experts leave the Mac's other apps before they grow, e.g. `2G`; `0` leaves only the 1 GiB margin. Auto is 7% of RAM, at least 2 GiB and at most 7 GiB. `/status` reports it as `host_spare_reserve_bytes`. |
 | `--idle-release` | `10m` | Time without a request before the engine unwires its memory and frees the weights; the next request restores them. `off` keeps both, though `POST /v1/memory/release` still frees the weights. See [weight loading](internals.md#weight-loading). |
 | `--max-cache-disk` | `auto` | SSD quota for cached KV pages and states: `auto` follows the volume, a quarter of its free space beyond a floor of 10 GiB (5% of a volume under 200 GiB), at most 32 GiB; a size such as `16G` is held as given while the volume keeps that floor; `0` turns the cache off. Kept for the session, or across restarts with `--persistent-cache`. See [SSD cache](#ssd-cache). |
 | `--max-cache-disk-writes` | `0` (no limit) | The most the SSD cache writes a day, e.g. `200G`. See [SSD cache](#ssd-cache). |
@@ -136,14 +137,14 @@ paths for `--model-dir`, `--draft-model` and `--mmproj`.
 | `--allow-idle-sleep` | Off | Let the Mac sleep automatically while requests run; by default it stays awake until they finish (the display may still sleep). |
 
 Sizes (`--max-memory`, `--max-cache-disk`, `--max-cache-disk-writes`,
-`--max-request-size`, `--ple-memory`, `--expert-memory`, `--sparse-kv-memory`) are a whole number of bytes, or one with a `K`, `M` or
+`--max-request-size`, `--ple-memory`, `--expert-memory`, `--sparse-kv-memory`, `--host-reserve`) are a whole number of bytes, or one with a `K`, `M` or
 `G` suffix in binary units: `28G` is 28 GiB, and `28GB`, `28GiB` and `28g` say
 the same. With a suffix the number may have a fraction, rounded down to whole
 bytes: `2.5G` is 2,560 MiB. Token counts (`--max-context`) are a whole number, or one with a `K`
 suffix of 1024 tokens or an `M` suffix of a million: `100K` is 102,400 tokens and `1M` is
 1,000,000. `--max-memory`, `--max-context`, `--max-cache-disk`,
-`--ple-memory`, `--expert-memory` and `--sparse-kv-memory` also take `auto`, their default,
-`--ple-memory off` and `--expert-memory off` load the whole table and every expert, `--max-cache-disk 0` turns the SSD cache off,
+`--ple-memory`, `--expert-memory`, `--sparse-kv-memory` and `--host-reserve` also take `auto`, their default,
+`--host-reserve 0` leaves only the margin, `--ple-memory off` and `--expert-memory off` load the whole table and every expert, `--max-cache-disk 0` turns the SSD cache off,
 and `--max-cache-disk-writes 0`, its default, sets no write budget. Durations
 (`--idle-release`, `--request-timeout`) are seconds, or a number with an `s`,
 `m` or `h` suffix, such as `90s`, `30m` or `1.5h`; `--idle-release off` turns
