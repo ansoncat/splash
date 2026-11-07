@@ -27,7 +27,17 @@
 >     `nemotron` is this branch plus this README.
 >
 > The desktop app and Homebrew formula below are upstream's and don't include
-> these changes. Build this branch from source instead. It needs macOS 26.4 or
+> these changes. Install the fork's prebuilt
+> [1.6.0-nemotron.1](https://github.com/ansoncat/splash-nemotron/releases/tag/1.6.0-nemotron.1)
+> (unsigned; Apple silicon, macOS 26.4 or later) as a `splash-nemotron`
+> command, beside any Homebrew `splash`:
+>
+> ```bash
+> curl -fsSL https://github.com/ansoncat/splash-nemotron/releases/download/1.6.0-nemotron.1/install.sh | sh
+> splash-nemotron serve --model nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
+> ```
+>
+> Or build this branch from source. It needs macOS 26.4 or
 > later, Xcode 26 or newer with its Metal Toolchain, and Python 3.12–3.14
 > ([build requirements](docs/README.md)):
 >

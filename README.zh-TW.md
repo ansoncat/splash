@@ -11,7 +11,7 @@ NVIDIA Nemotron 3.5 兩顆模型：
 - 兩顆都能看影片，並照官方做法修剪影片 token（EVS）。
 
 其餘功能和上游相同；上游的使用說明見 [README.md](README.md)。`nemotron` 已合併上游
-1.6.0（11-05 的 `main`）。上游的桌面 App 和 Homebrew 版不含這些改動，要從原始碼編譯。
+1.6.0（11-05 的 `main`）。上游的桌面 App 和 Homebrew 版不含這些改動，請用下面 fork 的預先編譯版，或從原始碼編譯。
 
 ## 分支
 
@@ -27,6 +27,17 @@ NVIDIA Nemotron 3.5 兩顆模型：
 | `nemotron-video` | 在前一個之上：影片輸入與 EVS 修剪 |
 
 `nemotron-3.5-bolt` 到 `nemotron-video` 這五個分支仍基於上游 10-31 的 `main`（1.5.0 之後）。
+
+## 安裝預先編譯版
+
+[1.6.0-nemotron.1](https://github.com/ansoncat/splash-nemotron/releases/tag/1.6.0-nemotron.1)：
+Apple silicon、macOS 26.4 以上，沒有簽章。裝成 `splash-nemotron` 指令（在 `~/.local`），不會蓋掉
+Homebrew 的 `splash`。
+
+```bash
+curl -fsSL https://github.com/ansoncat/splash-nemotron/releases/download/1.6.0-nemotron.1/install.sh | sh
+splash-nemotron serve --model nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF
+```
 
 ## 編譯與啟動
 
